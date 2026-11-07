@@ -94,7 +94,14 @@ func (d *Daemon) argv(command string) []string {
 	return append(append([]string{}, d.shell...), command)
 }
 
-// Run starts the daemon and blocks until SIGINT/SIGTERM.
+// Run is the cohort command. It has no options; what it does depends
+// on where it runs:
+//
+//   - in a terminal: it is the user's way in. It asks for the manager
+//     command if there is no config yet, starts the systemd service if
+//     the daemon isn't running, and attaches to the Desktop session.
+//   - without a terminal (systemd): it is the daemon, running until
+//     SIGINT/SIGTERM.
 func Run() error {
 	home, err := os.UserHomeDir()
 	if err != nil {
@@ -104,9 +111,11 @@ func Run() error {
 	if err := os.MkdirAll(root, 0o755); err != nil {
 		return fmt.Errorf("create %s: %w", root, err)
 	}
-	wrote, err := firstStart(filepath.Join(root, "config.json"))
-	if err != nil {
-		return err
+	if isTerminal(os.Stdin) {
+		if _, err := firstStart(filepath.Join(root, "config.json")); err != nil {
+			return err
+		}
+		return attach(root)
 	}
 	lock, err := os.OpenFile(filepath.Join(root, "cohort.lock"), os.O_CREATE|os.O_RDWR, 0o644)
 	if err != nil {
@@ -114,10 +123,6 @@ func Run() error {
 	}
 	defer lock.Close()
 	if err := syscall.Flock(int(lock.Fd()), syscall.LOCK_EX|syscall.LOCK_NB); err != nil {
-		if wrote {
-			fmt.Println("cohort is already running and will pick up the new config")
-			return nil
-		}
 		return errors.New("another cohort daemon is already running")
 	}
 	if err := seedServerFiles(root); err != nil {
@@ -133,9 +138,9 @@ func Run() error {
 }
 
 // firstStart asks for the manager command when there is no config yet
-// and cohort was started from a terminal. Without a terminal (systemd)
-// the daemon starts anyway and waits for the file to appear.
-// It reports whether it wrote the config.
+// and cohort was started from a terminal. (Without a terminal, the
+// daemon starts anyway and waits for the file to appear.) It reports
+// whether it wrote the config.
 func firstStart(cfgPath string) (bool, error) {
 	if _, err := os.Stat(cfgPath); !errors.Is(err, fs.ErrNotExist) {
 		return false, err

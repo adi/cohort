@@ -1,13 +1,16 @@
 # systemd user unit for the cohort daemon.
 #
 # Install (binary built with `go build -o ~/.cohort/bin/cohort .`):
-#   ~/.cohort/bin/cohort            # once, from a terminal: asks for the
-#                                   # manager command, then Ctrl-C
+#   ln -s ~/.cohort/bin/cohort ~/.local/bin/cohort
 #   mkdir -p ~/.config/systemd/user
 #   cp contrib/cohort.service ~/.config/systemd/user/
 #   systemctl --user daemon-reload
-#   systemctl --user enable --now cohort
+#   systemctl --user enable cohort
 #   loginctl enable-linger "$USER"  # start at boot, not at first login
+#   cohort                          # from a terminal: asks for the manager
+#                                   # command, starts the service, attaches
+#
+# Without a terminal (as here) cohort runs as the daemon.
 #
 # The tmux server is started by the daemon, so it belongs to this unit:
 # `systemctl --user restart cohort` stops every window and starts them

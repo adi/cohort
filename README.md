@@ -9,8 +9,9 @@ command itself.
 
 ## Architecture
 
-- cohort is a Go daemon with **no CLI options**. It runs until
-  `SIGINT`/`SIGTERM`, normally under systemd. Only one instance runs at
+- cohort is a Go daemon with **no CLI options**, run by systemd until
+  `SIGINT`/`SIGTERM`. Run in a terminal, the same `cohort` command
+  attaches you to Desktop instead (see Use). Only one instance runs at
   a time (`~/.cohort/cohort.lock`).
 - It is driven by the **cohort manager agent** (claude code), which
   edits `~/.cohort/config.json`. That file is the **single source of
@@ -131,33 +132,37 @@ the window and cohort recreates it.
   An empty `issues` object means everything matches the config. One
   agent failing never blocks the others.
 
-## Build & run
+## Install
 
 ```sh
 go build -o ~/.cohort/bin/cohort .
-~/.cohort/bin/cohort   # first time from a terminal: asks for the manager command
-```
-
-Started without a terminal and without a config, cohort waits for
-`config.json` to appear (running it once from a terminal writes it,
-even while the service is already running).
-
-Auto-start at boot (systemd user unit):
-
-```sh
+ln -s ~/.cohort/bin/cohort ~/.local/bin/cohort   # any directory on PATH
 mkdir -p ~/.config/systemd/user
 cp contrib/cohort.service ~/.config/systemd/user/
 systemctl --user daemon-reload
-systemctl --user enable --now cohort
+systemctl --user enable cohort
 loginctl enable-linger "$USER"   # start at boot, not at first login
 ```
 
-Attach with `tmux -L cohort attach -t Desktop`.
+## Use
+
+```sh
+cohort
+```
+
+`cohort` has no options. What it does depends on where it runs:
+
+- **In a terminal** it is your way in: the first time, it asks for the
+  manager command and writes `config.json`; if the daemon isn't
+  running it starts the service (`systemctl --user start cohort`);
+  then it attaches you to Desktop. Run from inside cohort's tmux, it
+  switches to Desktop instead of nesting a client.
+- **Without a terminal** (as the systemd service) it is the daemon.
+  Without a config it waits for `config.json` to appear.
 
 The tmux server belongs to the service: stopping or restarting the
 service (or a daemon crash) stops every window, and the next start
-recreates them all with their configured commands. Run by hand from a
-terminal instead, stopping cohort leaves the server running.
+recreates them all with their configured commands.
 
 ## Development
 
