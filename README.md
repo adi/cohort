@@ -141,15 +141,38 @@ the window and cohort recreates it.
 
 ## Install
 
+Linux (amd64 or arm64), with tmux, git and a systemd user session:
+
 ```sh
-go build -o ~/.cohort/bin/cohort .
-ln -s ~/.cohort/bin/cohort ~/.local/bin/cohort   # any directory on PATH
-mkdir -p ~/.config/systemd/user
-cp contrib/cohort.service ~/.config/systemd/user/
-systemctl --user daemon-reload
-systemctl --user enable cohort
-loginctl enable-linger "$USER"   # start at boot, not at first login
+curl -fsSL https://github.com/adi/cohort/releases/latest/download/install.sh | sh
 ```
+
+This installs the latest release to `~/.cohort/bin/cohort` (linked
+from `~/.local/bin/cohort`), checks it against the release's
+`SHA256SUMS`, installs and enables the `cohort` systemd user service,
+and enables linger so cohort starts at boot. It doesn't start the
+service; run `cohort` from a terminal for that. Pin a version with
+`COHORT_VERSION=v1.2.3` before `sh`.
+
+Upgrade to the latest release:
+
+```sh
+cohort upgrade
+```
+
+It replaces the binary only. The running daemon keeps the old version
+until `systemctl --user restart cohort`, which also restarts every
+agent, so that step is yours to choose.
+
+From source: `go build -o ~/.cohort/bin/cohort .`, then the steps in
+`contrib/cohort.service`.
+
+### Releases
+
+Pushing a tag `v*` makes GitHub Actions run the tests, build
+`cohort-linux-amd64` and `cohort-linux-arm64` (version stamped from the
+tag), and publish a release with them, `SHA256SUMS`, `install.sh` and
+`cohort.service`.
 
 ## Use
 
@@ -157,7 +180,8 @@ loginctl enable-linger "$USER"   # start at boot, not at first login
 cohort
 ```
 
-`cohort` has no options. What it does depends on where it runs:
+`cohort upgrade` and `cohort version` are the only subcommands. Plain
+`cohort` does what fits where it runs:
 
 - **In a terminal** it is your way in: the first time, it asks for the
   manager command (Enter takes the default, `claude --plugin-dir

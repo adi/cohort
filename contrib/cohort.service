@@ -1,6 +1,7 @@
 # systemd user unit for the cohort daemon.
 #
-# Install (binary built with `go build -o ~/.cohort/bin/cohort .`):
+# install.sh (README, Install) does all of this. By hand, with the
+# binary built with `go build -o ~/.cohort/bin/cohort .`:
 #   ln -s ~/.cohort/bin/cohort ~/.local/bin/cohort
 #   mkdir -p ~/.config/systemd/user
 #   cp contrib/cohort.service ~/.config/systemd/user/
