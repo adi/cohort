@@ -1,11 +1,23 @@
 # systemd user unit for the cohort daemon.
 #
 # Install (binary built with `go build -o ~/.cohort/bin/cohort .`):
+#   ~/.cohort/bin/cohort            # once, from a terminal: asks for the
+#                                   # manager command, then Ctrl-C
 #   mkdir -p ~/.config/systemd/user
 #   cp contrib/cohort.service ~/.config/systemd/user/
 #   systemctl --user daemon-reload
 #   systemctl --user enable --now cohort
+#   loginctl enable-linger "$USER"  # start at boot, not at first login
 #
+# The tmux server is started by the daemon, so it belongs to this unit:
+# `systemctl --user restart cohort` stops every window and starts them
+# all again with their configured commands. That is the intended way to
+# restart all agents (e.g. after upgrading harnesses). A daemon crash
+# does the same.
+#
+# Window commands run through `$SHELL -lic`, so they get the same PATH
+# and environment as an interactive terminal, not systemd's.
+
 [Unit]
 Description=Cohort agent manager daemon
 

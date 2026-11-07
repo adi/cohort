@@ -1,135 +1,84 @@
 // Package config defines cohort's declarative configuration (config.json).
 // The cohort manager agent edits this file directly; the cohort daemon
-// watches it and reconciles tmux state to match.
+// only reads it (it writes it once, at first start) and reconciles tmux
+// state to match.
+//
+// cohort knows nothing about LLM harnesses: every window just runs a
+// command. Starting fresh vs. resuming a session is the command's
+// business.
 package config
 
 import (
+	"bytes"
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
-	"strings"
+	"regexp"
 )
 
-// ManagerName is the name of the cohort manager agent itself. Its
-// window lives natively (and only) in the Desktop session as the
-// stable first window; it is not part of the agents list.
+// ManagerName is the reserved name of the cohort manager. Its window
+// lives only in the Desktop session, as its first window, and its
+// folder is ~/.cohort/cohort-manager.
 const ManagerName = "cohort-manager"
 
-// DefaultManagerCommand is the manager's startup command when the
-// config does not override it. The manager is reserved: it is always
-// claude code running in ~/.cohort/cohort-manager — only the exact
-// startup command is customizable.
-const DefaultManagerCommand = "claude"
+// namePattern restricts agent names so they are safe as tmux window
+// names and folder names, and can never be mistaken for a tmux window
+// index or pattern.
+var namePattern = regexp.MustCompile(`^[A-Za-z][A-Za-z0-9_-]*$`)
 
-// ManagerFolder returns the manager's absolute folder path (fixed).
-func ManagerFolder(root string) string {
-	return filepath.Join(root, ManagerName)
-}
-
-// Agent is one LLM harness running in one folder, materialized as a
-// tmux window named <Name> in the Background session.
+// Agent is one command running in its own folder (~/.cohort/<Name>),
+// materialized as a tmux window in the Background session.
 type Agent struct {
-	// Name is the agent name; also the tmux window name and, by
-	// default, the folder name under ~/.cohort/.
-	// Restricted to letters, digits, '-' and '_'.
+	// Name is the agent name: the tmux window name and the folder name
+	// under ~/.cohort/.
 	Name string `json:"name"`
 
-	// Harness identifies the LLM harness (claude, codex, pi, opencode...).
-	// Determines the default startup command unless Command is set.
-	Harness string `json:"harness"`
-
-	// Folder defaults to ~/.cohort/<Name> when empty. May use ~/ prefix.
-	Folder string `json:"folder,omitempty"`
-
-	// Command overrides the harness default startup command.
-	// Passed to tmux as a shell command.
-	Command string `json:"command,omitempty"`
+	// Command is the shell command run in the agent's window. It is run
+	// through an interactive login shell, so the user's environment
+	// (PATH, API keys) applies.
+	Command string `json:"command"`
 
 	// Linked controls whether the agent's window is linked into the
 	// Desktop session.
 	Linked bool `json:"linked"`
 }
 
-// HarnessCommands maps harness names to their default startup commands.
-var HarnessCommands = map[string]string{
-	"claude":   "claude",
-	"codex":    "codex",
-	"pi":       "pi",
-	"opencode": "opencode",
-}
-
-// Validate checks the agent is well formed without mutating it.
+// Validate checks the agent is well formed.
 func (a *Agent) Validate() error {
-	if a.Name == "" {
-		return errors.New("agent name is empty")
+	if !namePattern.MatchString(a.Name) {
+		return fmt.Errorf("agent name %q: must start with a letter and contain only letters, digits, '-' and '_'", a.Name)
 	}
-	if strings.ContainsAny(a.Name, ":.") || strings.ContainsRune(a.Name, ' ') {
-		return fmt.Errorf("agent name %q: only letters, digits, '-' and '_' allowed", a.Name)
+	if a.Name == ManagerName {
+		return fmt.Errorf("agent name %q is reserved for the manager", ManagerName)
 	}
 	if a.Command == "" {
-		if _, ok := HarnessCommands[a.Harness]; !ok {
-			return fmt.Errorf("agent %q: unknown harness %q and no command given", a.Name, a.Harness)
-		}
+		return fmt.Errorf("agent %q: command is empty", a.Name)
 	}
 	return nil
 }
 
-// StartupCommand resolves the command tmux should run in the window.
-func (a *Agent) StartupCommand() string {
-	if a.Command != "" {
-		return a.Command
-	}
-	return HarnessCommands[a.Harness]
-}
-
-// ResolveFolder returns the agent's absolute folder path.
-func (a *Agent) ResolveFolder(root string) string {
-	if a.Folder == "" {
-		return filepath.Join(root, a.Name)
-	}
-	return Expand(a.Folder)
-}
-
-// Expand resolves a leading ~/ or ~ in a path.
-func Expand(p string) string {
-	if p == "~" || strings.HasPrefix(p, "~/") {
-		home, err := os.UserHomeDir()
-		if err == nil {
-			return filepath.Join(home, strings.TrimPrefix(p, "~"))
-		}
-	}
-	return p
-}
-
 // Config is the root of config.json.
 type Config struct {
-	// Manager is the cohort manager's startup command (tmux shell
-	// command). Empty means DefaultManagerCommand. Everything else
-	// about the manager is reserved and hardcoded.
-	Manager string   `json:"manager,omitempty"`
+	// Manager is the cohort manager's command (required).
+	Manager string   `json:"manager"`
 	Agents  []*Agent `json:"agents"`
 }
 
-// ManagerCommand resolves the manager's startup command.
-func (c *Config) ManagerCommand() string {
-	if c.Manager != "" {
-		return c.Manager
-	}
-	return DefaultManagerCommand
-}
-
-// Validate validates all agents and rejects duplicates and the
-// reserved manager name in agents.
+// Validate checks the whole config.
 func (c *Config) Validate() error {
+	if c.Manager == "" {
+		return errors.New(`"manager" command is missing or empty`)
+	}
 	seen := make(map[string]bool, len(c.Agents))
 	for _, a := range c.Agents {
+		if a == nil {
+			return errors.New("null agent entry")
+		}
 		if err := a.Validate(); err != nil {
 			return err
-		}
-		if a.Name == ManagerName {
-			return fmt.Errorf("%q is reserved for the manager; use the top-level \"manager\" setting", ManagerName)
 		}
 		if seen[a.Name] {
 			return fmt.Errorf("duplicate agent %q", a.Name)
@@ -149,74 +98,87 @@ func (c *Config) Agent(name string) *Agent {
 	return nil
 }
 
-// Has reports whether an agent with the given name is configured.
-func (c *Config) Has(name string) bool { return c.Agent(name) != nil }
-
-// EnsureManager migrates a legacy manager entry (the manager used to
-// be an agents entry) into the top-level manager setting. Returns
-// true if the config was modified.
-func (c *Config) EnsureManager() bool {
-	m := c.Agent(ManagerName)
-	if m == nil {
-		return false
-	}
-	if c.Manager == "" {
-		c.Manager = m.StartupCommand()
-		if c.Manager == "" {
-			c.Manager = DefaultManagerCommand
-		}
-	}
-	c.removeAgent(ManagerName)
-	return true
+// Folder returns the folder of the agent (or the manager) with the
+// given name: always <root>/<name>.
+func Folder(root, name string) string {
+	return filepath.Join(root, name)
 }
 
-// removeAgent deletes the agent with the given name, if present.
-func (c *Config) removeAgent(name string) {
-	for i, a := range c.Agents {
-		if a.Name == name {
-			c.Agents = append(c.Agents[:i], c.Agents[i+1:]...)
-			return
-		}
-	}
-}
-
-// Parse decodes config bytes, applies defaults/migration
-// (EnsureManager) and validates. It does not mutate the input.
+// Parse decodes and validates config bytes. Unknown fields are
+// rejected (encoding/json would otherwise silently ignore typos).
 func Parse(data []byte) (*Config, error) {
+	dec := json.NewDecoder(bytes.NewReader(data))
+	dec.DisallowUnknownFields()
 	var c Config
-	if err := json.Unmarshal(data, &c); err != nil {
+	if err := dec.Decode(&c); err != nil {
 		return nil, fmt.Errorf("parse config: %w", err)
 	}
-	c.EnsureManager()
+	if _, err := dec.Token(); err != io.EOF {
+		return nil, errors.New("parse config: trailing data after the JSON object")
+	}
+	if err := checkKeys(data); err != nil {
+		return nil, err
+	}
 	if err := c.Validate(); err != nil {
 		return nil, err
 	}
 	return &c, nil
 }
 
-// Load reads, parses and validates the config file at path.
-// Returns a wrapped error if the file does not exist.
-func Load(path string) (*Config, error) {
-	data, err := os.ReadFile(path)
-	if err != nil {
-		return nil, err
+// checkKeys rejects keys that differ from the schema only by case
+// ("Linked" vs "linked"), which encoding/json would accept silently.
+func checkKeys(data []byte) error {
+	var root map[string]json.RawMessage
+	if err := json.Unmarshal(data, &root); err != nil {
+		return fmt.Errorf("parse config: %w", err)
 	}
-	return Parse(data)
+	if err := exactKeys(root, "manager", "agents"); err != nil {
+		return err
+	}
+	var agents []map[string]json.RawMessage
+	if raw, ok := root["agents"]; ok {
+		if err := json.Unmarshal(raw, &agents); err != nil {
+			return fmt.Errorf("parse config: %w", err)
+		}
+	}
+	for _, a := range agents {
+		if err := exactKeys(a, "name", "command", "linked"); err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
-// Save writes the config to path, pretty-printed.
-func Save(path string, c *Config) error {
+func exactKeys(obj map[string]json.RawMessage, allowed ...string) error {
+	for k := range obj {
+		ok := false
+		for _, want := range allowed {
+			if k == want {
+				ok = true
+				break
+			}
+		}
+		if !ok {
+			return fmt.Errorf("parse config: unknown field %q", k)
+		}
+	}
+	return nil
+}
+
+// WriteNew atomically creates a config file with just the manager
+// command. Used once, at first start.
+func WriteNew(path, manager string) error {
+	c := &Config{Manager: manager, Agents: []*Agent{}}
+	if err := c.Validate(); err != nil {
+		return err
+	}
 	data, err := json.MarshalIndent(c, "", "  ")
 	if err != nil {
 		return err
 	}
-	data = append(data, '\n')
-	return os.WriteFile(path, data, 0o644)
-}
-
-// Marshal returns the canonical pretty-printed config bytes (the
-// format Save writes).
-func Marshal(c *Config) []byte {
-	data, _ := json.MarshalIndent(c, "", "  ")
-	return append(data, '\n')
+	tmp := path + ".tmp"
+	if err := os.WriteFile(tmp, append(data, '\n'), 0o644); err != nil {
+		return err
+	}
+	return os.Rename(tmp, path)
 }

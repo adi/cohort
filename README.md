@@ -1,118 +1,135 @@
 # cohort
 
-A daemon that manages a team of LLM harness agents (claude code, codex,
-pi, opencode, ...) each running in its own folder, on a dedicated
-non-default tmux server.
+A daemon that keeps a team of agents running on a dedicated,
+non-default tmux server. Each agent is a command running in its own
+folder. cohort doesn't know or care what the commands are (claude
+code, codex, pi, opencode, ...): to cohort they are plain Linux
+commands, and starting fresh or resuming a session is up to the
+command itself.
 
 ## Architecture
 
-- cohort is a Go daemon with **no CLI options**. It is started from the
-  CLI (or by systemd at boot) and runs until `SIGINT`/`SIGTERM`.
-- All driving is performed by the **cohort manager agent** (an agent
-  running claude code, like any other agent) through two means:
-  - editing the declarative config `~/.cohort/config.json`
-  - direct tmux manipulation on cohort's private server (`tmux -L cohort`)
+- cohort is a Go daemon with **no CLI options**. It runs until
+  `SIGINT`/`SIGTERM`, normally under systemd. Only one instance runs at
+  a time (`~/.cohort/cohort.lock`).
+- It is driven by the **cohort manager agent** (claude code), which
+  edits `~/.cohort/config.json`. That file is the **single source of
+  truth**: every second cohort re-reads it and makes tmux match,
+  undoing changes made directly in tmux (for example a window linked
+  by hand). cohort never writes the file, except to create it at first
+  start.
 - Tmux server (socket `cohort`), two sessions:
-  - **Background** — the authoritative home of the *agent* windows.
-  - **Desktop** — the session a human attaches to. Its stable first
-    window is the cohort manager, which lives *only* in Desktop (never
-    in Background). Other agent windows are *linked* into Desktop on
-    demand (tmux `link-window`), so a window lives in Background and
-    is only displayed in Desktop.
-- The manager's settings are special and distinct from agents: a
-  separate top-level `manager` setting in config.json, not an agents
-  entry. With no agents configured, Background doesn't exist at all;
-  it is created with the first agent's window.
-- Every agent `A` lives in the folder `~/.cohort/<A>`, created by
-  cohort as a **local-only git repo** (no remote). Creating an agent
-  whose folder already exists is an **error** — cohort never adopts
-  pre-existing folders. Cohort marks the repos it owns with the local
-  git config key `cohort.managed=true`; a marked folder can be resumed
-  (e.g. after a tmux restart).
-- The private server runs with its own tmux config, `~/.cohort/tmux.conf`
-  (seeded by cohort with a sensible default, then owned/customized by the
-  manager agent). It is passed via `-f` on every cohort invocation, so
-  the user's `~/.tmux.conf` is never read. Note tmux only reads `-f` at
-  server startup — and cohort owns server startup. If the manager
-  restarts the server by hand (`kill-server`), let cohort recreate it,
-  or pass `-f ~/.cohort/tmux.conf` on the first command after.
-- The cohort manager's own folder (`~/.cohort/cohort-manager`) is
-  versioned like any other agent folder and is where the manager stores
-  its team structuring and skills.
+  - **Desktop**: the session a human attaches to. Its first window is
+    always the manager (recreated, or moved back to the front, if
+    needed). The other windows are the agents configured with
+    `"linked": true`, linked in from Background with `link-window`.
+  - **Background**: the home of every agent window. The manager never
+    lives here. With no agents it doesn't exist.
+- cohort identifies its windows by a tmux window option,
+  `@cohort=<agent name>`, and by tmux window id, never by window name.
+  Renaming a window is harmless, and if the Background session is killed
+  the windows still linked into Desktop are brought back into Background
+  instead of being started twice.
+- Every agent `A` lives in `~/.cohort/<A>`; the manager lives in
+  `~/.cohort/cohort-manager`. cohort creates each folder as a
+  **local-only git repo** (no remote) and marks it with the local git
+  config `cohort.managed=true`. A folder that already exists without
+  that mark is an **error** (cohort never adopts existing folders);
+  a marked folder is reused, e.g. after a restart. The mark lives in
+  `.git/config`, so a folder restored with `git clone` doesn't have it;
+  adopt it with `git -C <folder> config cohort.managed true` (the error
+  message shows this command).
+- Window commands run through the user's shell as an interactive login
+  shell (`$SHELL -lic '<command>'`), so they get the same PATH and
+  environment (API keys, etc.) as a terminal, even under systemd.
+- The private server uses its own tmux config, `~/.cohort/tmux.conf`
+  (seeded with a default, then owned by the manager), passed with `-f`
+  on every invocation, so `~/.tmux.conf` is never read. tmux reads `-f`
+  only at server start, and cohort starts the server.
 
 ## Config (`~/.cohort/config.json`)
 
 ```json
 {
-  "manager": "claude --model opus",
+  "manager": "claude --continue || claude",
   "agents": [
-    {
-      "name": "codex-api",
-      "harness": "codex",
-      "folder": "~/work/api",          // optional, defaults to ~/.cohort/<name>
-      "command": "codex --full-auto",   // optional, overrides harness default
-      "linked": false
-    }
+    { "name": "api", "command": "codex resume --last || codex", "linked": true },
+    { "name": "docs", "command": "pi --continue", "linked": false }
   ]
 }
 ```
 
-- `manager` is the cohort manager's startup command (tmux shell
-  command); omit it for the default `"claude"`. Everything else about
-  the manager is reserved and hardcoded: it is always claude code
-  running in `~/.cohort/cohort-manager`, and its window is the stable
-  first window of Desktop, never in Background.
-- Agent `name` is the tmux window name; letters, digits, `-`, `_` only.
-  `cohort-manager` is reserved and never valid in `agents`.
-- Agent `harness` picks a default startup command from: `claude`,
-  `codex`, `pi`, `opencode`. Override with `command`.
-- `linked` controls whether the window is linked into Desktop.
-- cohort migrates legacy configs that had the manager as an agents
-  entry (hoisting its command into the `manager` setting), persisting
-  the normalized form back to the file.
+- `manager` (required): the command that starts the manager, used for
+  every start, fresh or resumed. It is asked for when cohort first
+  starts from a terminal.
+- Agent `name`: starts with a letter; letters, digits, `-`, `_` only.
+  It is the window name and the folder name. `cohort-manager` is
+  reserved.
+- Agent `command` (required): what runs in the window.
+- Agent `linked`: whether the window is shown in Desktop (default false).
+- Parsing is strict: unknown or wrongly cased keys, comments and
+  trailing data are rejected. A rejected config is reported and the
+  last valid one stays in effect, so a bad edit never tears anything
+  down.
+- Changing an agent's `command` doesn't affect a running window. It
+  applies the next time the window is created (kill the window to
+  apply it now).
 
 ## Operations
 
-All performed by editing `config.json`; cohort watches the file and
-reconciles within a second (plus a drift-correcting pass every 10s):
-
 | Operation | How |
 | --- | --- |
-| Create agent window | add an entry to `agents` |
-| Link window into Desktop | set `"linked": true` |
-| Unlink window from Desktop | set `"linked": false` |
-| Delete agent | remove the entry — **destroy semantics postponed**; the orphaned window is only reported in the log, folder never touched |
+| Create an agent | add an entry to `agents` |
+| Show it in Desktop | `"linked": true` |
+| Hide it from Desktop | `"linked": false` |
+| Restart one agent (or the manager) | `tmux -L cohort kill-window -t <window>`; cohort recreates it within a second |
+| Restart all agents | `systemctl --user restart cohort` (stops the whole tmux server) |
+| Delete an agent | remove the entry. **Destroying windows is postponed**: the window is unlinked from Desktop and left running in Background, reported as an orphan; the folder is never touched |
 
-Windows are configured `remain-on-exit on`: when a harness exits, its
-window survives as a dead pane for inspection. "Restart an agent" is
-simply `tmux -L cohort kill-window -t Background:name` (or
-`Desktop:cohort-manager` for the manager itself) — cohort recreates
-it on the next drift pass, the manager as Desktop's first window. A
-broken/invalid config is rejected and the previous state is kept;
-errors go to `~/.cohort/cohort.log`.
+Windows are `remain-on-exit on`: when a command exits, its window
+stays as a dead pane for inspection. cohort doesn't restart it; kill
+the window and cohort recreates it.
+
+## Status and logs
+
+- Problems (rejected config, an agent folder that can't be used, tmux
+  errors, orphans) are logged once when they appear and once when they
+  clear, to stderr and `~/.cohort/cohort.log`.
+- `~/.cohort/status.json` always holds the current problems, for the
+  manager to read: `{"updated": ..., "issues": {"agent api": "..."}}`.
+  An empty `issues` object means everything matches the config. One
+  agent failing never blocks the others.
 
 ## Build & run
 
 ```sh
 go build -o ~/.cohort/bin/cohort .
-~/.cohort/bin/cohort   # foreground; logs to stderr and ~/.cohort/cohort.log
+~/.cohort/bin/cohort   # first time from a terminal: asks for the manager command
 ```
 
-Auto-start at boot (systemd user unit provided):
+Started without a terminal and without a config, cohort waits for
+`config.json` to appear (running it once from a terminal writes it,
+even while the service is already running).
+
+Auto-start at boot (systemd user unit):
 
 ```sh
 mkdir -p ~/.config/systemd/user
 cp contrib/cohort.service ~/.config/systemd/user/
 systemctl --user daemon-reload
 systemctl --user enable --now cohort
+loginctl enable-linger "$USER"   # start at boot, not at first login
 ```
 
 Attach with `tmux -L cohort attach -t Desktop`.
 
-## Notes
+The tmux server belongs to the service: stopping or restarting the
+service (or a daemon crash) stops every window, and the next start
+recreates them all with their configured commands. Run by hand from a
+terminal instead, stopping cohort leaves the server running.
 
-- Stopping the daemon never stops the tmux server; windows keep
-  running and cohort reconciles state on restart.
-- Destroying a window (agent deletion) is deliberately not implemented
-  yet: design postponed. Currently the daemon only logs a warning for
-  Background windows without a config entry.
+## Development
+
+`go test ./...` runs the reconcile logic against throwaway tmux
+servers (sockets in temp dirs) and skips those tests if tmux is
+missing.

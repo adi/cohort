@@ -3,17 +3,20 @@
 //
 // Layout on the tmux server (socket "cohort"):
 //
-//	Background  - authoritative home of every agent window
-//	Desktop     - the cohort manager as its stable first window, plus
-//	              whichever agent windows are linked per config
+//	Desktop     - the cohort manager as its first window, plus the agent
+//	              windows whose config says "linked": true
+//	Background  - the home of every agent window (never the manager)
 //
-// The daemon watches config.json for changes and reconciles. It is the
-// only writer of windows; the cohort manager agent (the sole driver)
-// only edits config.json.
+// config.json is the single source of truth: the daemon reads it every
+// second and reconciles tmux to match. It never writes it, except to
+// create it at first start. Problems are logged once when they appear
+// and once when they clear, and mirrored to ~/.cohort/status.json.
 package cohort
 
 import (
+	"bufio"
 	"bytes"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -23,10 +26,11 @@ import (
 	"os/exec"
 	"os/signal"
 	"path/filepath"
-	"strconv"
+	"sort"
 	"strings"
 	"syscall"
 	"time"
+	"unsafe"
 
 	"cohort/internal/config"
 	"cohort/internal/tmux"
@@ -35,16 +39,14 @@ import (
 const (
 	// SocketName is the tmux socket name of cohort's private server.
 	SocketName = "cohort"
-	// SessionBackground is the authoritative session holding all agent windows.
+	// SessionBackground is the session holding all agent windows.
 	SessionBackground = "Background"
 	// SessionDesktop is the session the human looks at.
 	SessionDesktop = "Desktop"
 	// gitManagedKey marks a repo folder as created/owned by cohort.
 	gitManagedKey = "cohort.managed"
-	// fullReconcileEvery forces a drift-correcting reconcile interval.
-	fullReconcileEvery = 10 * time.Second
-	// pollInterval is how often config changes are detected.
-	pollInterval = time.Second
+	// tickInterval is how often config is re-read and tmux reconciled.
+	tickInterval = time.Second
 )
 
 // Daemon is the cohort daemon state.
@@ -53,15 +55,45 @@ type Daemon struct {
 	cfgPath string // ~/.cohort/config.json
 	tmux    *tmux.Server
 	log     *log.Logger
+	// shell is the argv prefix every window command is run with; the
+	// command string is appended as the last argument.
+	shell []string
 
-	cfg      *config.Config
-	cfgStamp int64 // mtime+size fingerprint of the last read config
-	lastFull time.Time
+	cfg    *config.Config // last valid config
+	cfgRaw []byte         // bytes of the last config file read
+	cfgErr string         // why cfgRaw was rejected, "" if valid
+
+	issues     map[string]string // problems found in the current tick
+	lastIssues map[string]string // problems reported after the last tick
+}
+
+func newDaemon(root, socket string, logw io.Writer) *Daemon {
+	return &Daemon{
+		root:       root,
+		cfgPath:    filepath.Join(root, "config.json"),
+		tmux:       tmux.New(socket, filepath.Join(root, "tmux.conf")),
+		log:        log.New(logw, "cohort: ", log.LstdFlags),
+		shell:      loginShell(),
+		lastIssues: map[string]string{},
+	}
+}
+
+// loginShell runs commands through the user's shell as an interactive
+// login shell, so windows get the same environment (PATH, API keys) as
+// a terminal, even when cohort itself runs under systemd.
+func loginShell() []string {
+	sh := os.Getenv("SHELL")
+	if sh == "" {
+		sh = "/bin/sh"
+	}
+	return []string{sh, "-lic"}
+}
+
+func (d *Daemon) argv(command string) []string {
+	return append(append([]string{}, d.shell...), command)
 }
 
 // Run starts the daemon and blocks until SIGINT/SIGTERM.
-// The tmux server is never killed by the daemon; stopping cohort just
-// stops reconciliation.
 func Run() error {
 	home, err := os.UserHomeDir()
 	if err != nil {
@@ -70,6 +102,22 @@ func Run() error {
 	root := filepath.Join(home, ".cohort")
 	if err := os.MkdirAll(root, 0o755); err != nil {
 		return fmt.Errorf("create %s: %w", root, err)
+	}
+	wrote, err := firstStart(filepath.Join(root, "config.json"))
+	if err != nil {
+		return err
+	}
+	lock, err := os.OpenFile(filepath.Join(root, "cohort.lock"), os.O_CREATE|os.O_RDWR, 0o644)
+	if err != nil {
+		return err
+	}
+	defer lock.Close()
+	if err := syscall.Flock(int(lock.Fd()), syscall.LOCK_EX|syscall.LOCK_NB); err != nil {
+		if wrote {
+			fmt.Println("cohort is already running and will pick up the new config")
+			return nil
+		}
+		return errors.New("another cohort daemon is already running")
 	}
 	if err := seedTmuxConf(filepath.Join(root, "tmux.conf")); err != nil {
 		return err
@@ -80,112 +128,155 @@ func Run() error {
 		return err
 	}
 	defer logFile.Close()
+	return newDaemon(root, SocketName, io.MultiWriter(os.Stderr, logFile)).loop()
+}
 
-	d := &Daemon{
-		root:    root,
-		cfgPath: filepath.Join(root, "config.json"),
-		tmux:    tmux.New(SocketName, filepath.Join(root, "tmux.conf")),
-		log:     log.New(io.MultiWriter(os.Stderr, logFile), "cohort: ", log.LstdFlags),
+// firstStart asks for the manager command when there is no config yet
+// and cohort was started from a terminal. Without a terminal (systemd)
+// the daemon starts anyway and waits for the file to appear.
+// It reports whether it wrote the config.
+func firstStart(cfgPath string) (bool, error) {
+	if _, err := os.Stat(cfgPath); !errors.Is(err, fs.ErrNotExist) {
+		return false, err
 	}
-	return d.loop()
+	if !isTerminal(os.Stdin) {
+		return false, nil
+	}
+	fmt.Printf("cohort first start: no %s yet.\n", cfgPath)
+	fmt.Println("The cohort manager is claude code running in ~/.cohort/cohort-manager.")
+	fmt.Println("Enter the command that starts it (it is used for every start, fresh or resumed),")
+	fmt.Println("e.g.  claude --continue || claude")
+	in := bufio.NewReader(os.Stdin)
+	for {
+		fmt.Print("manager command: ")
+		line, err := in.ReadString('\n')
+		cmd := strings.TrimSpace(line)
+		if cmd != "" {
+			if err := config.WriteNew(cfgPath, cmd); err != nil {
+				return false, err
+			}
+			fmt.Printf("wrote %s\n", cfgPath)
+			return true, nil
+		}
+		if err != nil {
+			return false, errors.New("no manager command given")
+		}
+	}
+}
+
+// isTerminal reports whether f is a terminal (/dev/null is a character
+// device too, so a mode check is not enough).
+func isTerminal(f *os.File) bool {
+	var t syscall.Termios
+	_, _, errno := syscall.Syscall(syscall.SYS_IOCTL, f.Fd(), syscall.TCGETS, uintptr(unsafe.Pointer(&t)))
+	return errno == 0
 }
 
 func (d *Daemon) loop() error {
 	sig := make(chan os.Signal, 1)
 	signal.Notify(sig, syscall.SIGINT, syscall.SIGTERM)
-
-	if d.reloadConfig() {
-		d.reconcile()
-		d.lastFull = time.Now()
-	}
-	ticker := time.NewTicker(pollInterval)
+	ticker := time.NewTicker(tickInterval)
 	defer ticker.Stop()
 	for {
+		d.tick()
 		select {
 		case <-sig:
-			d.log.Printf("shutting down (tmux server left running)")
+			d.log.Printf("shutting down")
 			return nil
 		case <-ticker.C:
-			if d.reloadConfig() {
-				d.reconcile()
-				d.lastFull = time.Now()
-				continue
-			}
-			// If the tmux server, the Desktop session, or (while any
-			// agent is configured) the Background session died, repair
-			// immediately.
-			nAgents := 0
-			if d.cfg != nil {
-				nAgents = len(d.cfg.Agents)
-			}
-			if !d.tmux.HasSession(SessionDesktop) ||
-				(nAgents > 0 && !d.tmux.HasSession(SessionBackground)) {
-				d.reconcile()
-				d.lastFull = time.Now()
-				continue
-			}
-			// Periodic drift correction.
-			if time.Since(d.lastFull) >= fullReconcileEvery {
-				d.reconcile()
-				d.lastFull = time.Now()
-			}
 		}
 	}
 }
 
-// reloadConfig loads config.json when it changed on disk. A missing
-// file triggers bootstrap (default config with the manager settings).
-// Schema upgrades (e.g. a legacy manager agents entry hoisted to the
-// top-level "manager" setting) are persisted back to the file.
-func (d *Daemon) reloadConfig() bool {
-	st, err := os.Stat(d.cfgPath)
-	if errors.Is(err, fs.ErrNotExist) {
-		d.cfg = &config.Config{Manager: config.DefaultManagerCommand, Agents: []*config.Agent{}}
-		if err := config.Save(d.cfgPath, d.cfg); err != nil {
-			d.log.Printf("ERROR: write default config: %v", err)
-			return false
+// tick re-reads the config and reconciles tmux, then reports the
+// problems that appeared, changed or cleared since the last tick.
+func (d *Daemon) tick() {
+	d.issues = map[string]string{}
+	d.reloadConfig()
+	if d.cfgErr != "" {
+		d.issue("config", d.cfgErr)
+	}
+	if d.cfg != nil {
+		d.reconcile()
+	}
+	d.report()
+}
+
+// issue records a problem found during the current tick.
+func (d *Daemon) issue(key, format string, args ...any) {
+	d.issues[key] = fmt.Sprintf(format, args...)
+}
+
+// report logs issues that are new or changed, and the ones that went
+// away, and rewrites status.json when anything changed.
+func (d *Daemon) report() {
+	changed := false
+	keys := make([]string, 0, len(d.issues))
+	for k := range d.issues {
+		keys = append(keys, k)
+	}
+	sort.Strings(keys)
+	for _, k := range keys {
+		if d.lastIssues[k] != d.issues[k] {
+			d.log.Printf("ERROR [%s] %s", k, d.issues[k])
+			changed = true
 		}
-		if st, err := os.Stat(d.cfgPath); err == nil {
-			d.cfgStamp = stamp(st)
+	}
+	for k := range d.lastIssues {
+		if _, ok := d.issues[k]; !ok {
+			d.log.Printf("resolved [%s]", k)
+			changed = true
 		}
-		d.log.Printf("bootstrapped default config at %s", d.cfgPath)
-		return true
 	}
-	if err != nil {
-		d.log.Printf("ERROR: stat config: %v", err)
-		return false
+	d.lastIssues = d.issues
+	if changed {
+		d.writeStatus()
 	}
-	if s := stamp(st); s == d.cfgStamp {
-		return false
+}
+
+// writeStatus mirrors the current issues to status.json, for the
+// manager agent to read.
+func (d *Daemon) writeStatus() {
+	st := struct {
+		Updated time.Time         `json:"updated"`
+		Issues  map[string]string `json:"issues"`
+	}{time.Now().Round(time.Second), d.issues}
+	data, _ := json.MarshalIndent(st, "", "  ")
+	path := filepath.Join(d.root, "status.json")
+	if err := os.WriteFile(path+".tmp", append(data, '\n'), 0o644); err == nil {
+		os.Rename(path+".tmp", path)
 	}
+}
+
+// reloadConfig re-reads config.json when its content changed. An
+// invalid file is rejected and the last valid config is kept, so a
+// broken edit never tears down running agents.
+func (d *Daemon) reloadConfig() {
 	raw, err := os.ReadFile(d.cfgPath)
-	if err != nil {
-		d.log.Printf("ERROR: read config: %v", err)
-		return false
+	if errors.Is(err, fs.ErrNotExist) {
+		d.cfgRaw = nil
+		if d.cfg == nil {
+			d.cfgErr = fmt.Sprintf("%s does not exist; run cohort once from a terminal to set the manager command", d.cfgPath)
+		} else {
+			d.cfgErr = fmt.Sprintf("%s was deleted; keeping the last valid config", d.cfgPath)
+		}
+		return
 	}
+	if err != nil {
+		d.cfgErr = fmt.Sprintf("read config: %v", err)
+		return
+	}
+	if d.cfgRaw != nil && bytes.Equal(raw, d.cfgRaw) {
+		return
+	}
+	d.cfgRaw = raw
 	cfg, err := config.Parse(raw)
 	if err != nil {
-		// Keep last known-good config; a broken file must not tear
-		// down running agents.
-		d.log.Printf("ERROR: config rejected, keeping previous state: %v", err)
-		d.cfgStamp = stamp(st)
-		return false
+		d.cfgErr = fmt.Sprintf("config rejected, keeping the last valid one: %v", err)
+		return
 	}
-	d.cfg = cfg
-	d.cfgStamp = stamp(st)
-	// If defaults/migration changed the structure, persist the
-	// normalized form so the file on disk matches what we run.
-	if norm := config.Marshal(cfg); !bytes.Equal(norm, raw) {
-		if err := os.WriteFile(d.cfgPath, norm, 0o644); err != nil {
-			d.log.Printf("ERROR: persist normalized config: %v", err)
-		} else {
-			if st, err := os.Stat(d.cfgPath); err == nil {
-				d.cfgStamp = stamp(st)
-			}
-			d.log.Printf("normalized config (defaults/migration applied)")
-		}
-	}
-	return true
+	d.cfg, d.cfgErr = cfg, ""
+	d.log.Printf("config loaded: %d agent(s)", len(cfg.Agents))
 }
 
 // defaultTmuxConf is the initial server configuration. Once seeded,
@@ -195,15 +286,16 @@ const defaultTmuxConf = `# cohort server configuration.
 # (tmux -L cohort) never reads your ~/.tmux.conf.
 # Owned by the cohort manager agent: edit freely; restart the server
 # (tmux -L cohort kill-server, cohort re-creates it) to apply, or set
-# options live with: tmux -L cohort -f ~/.cohort/tmux.conf set-option ...
+# options live with: tmux -L cohort set-option ...
 
 set -g default-terminal "tmux-256color"
 set -g history-limit 100000
 set -g mouse on
 set -g status-position top
 set -g status-interval 5
-# Keep agent windows around (as dead panes) when a harness exits, so
-# its output can be inspected before the daemon restarts it.
+# Keep a window open (as a dead pane) when its command exits, so its
+# output can be inspected. cohort does not restart dead panes; kill
+# the window and cohort recreates it.
 setw -g remain-on-exit on
 
 set -g status-style "bg=colour236,fg=colour145"
@@ -222,160 +314,276 @@ func seedTmuxConf(path string) error {
 	return os.WriteFile(path, []byte(defaultTmuxConf), 0o644)
 }
 
-func stamp(st os.FileInfo) int64 {
-	if st == nil {
-		return 0
-	}
-	return st.ModTime().UnixNano() ^ st.Size()
-}
-
 // reconcile brings the tmux server into the state declared by config.
-// It is idempotent; errors are logged and retried on the next pass.
+// It is idempotent; failures are recorded as issues and retried on the
+// next tick. Windows are matched by their @cohort tag and window id,
+// never by name.
 func (d *Daemon) reconcile() {
-	cfg := d.cfg
-	if cfg == nil {
+	if !d.reconcileManager() {
 		return
 	}
-	mgrName := config.ManagerName
-	mgrFolder := config.ManagerFolder(d.root)
-	mgrCmd := cfg.ManagerCommand()
-
-	// 1. The manager window is stable in Desktop only; it must never
-	// exist in Background. Remove legacy/rogue copies.
-	if bgWins, err := d.tmux.ListWindows(SessionBackground); err == nil {
-		for _, w := range bgWins {
-			if w.Name != mgrName {
-				continue
-			}
-			// Target by index: several same-named windows may exist.
-			target := SessionBackground + ":" + itoa(w.Index)
-			if w.Linked {
-				// Old layout: manager window created in Background and
-				// linked into Desktop. Drop the Background link; the
-				// window stays (stable) in Desktop.
-				if err := d.tmux.UnlinkWindow(target); err != nil {
-					d.log.Printf("ERROR: unlink %s from Background: %v", mgrName, err)
-				}
-			} else {
-				// Rogue manager window living only in Background.
-				if err := d.tmux.KillWindow(target); err != nil {
-					d.log.Printf("ERROR: destroy rogue %s window in Background: %v", mgrName, err)
-				}
-			}
-		}
-	}
-
-	// 2. Desktop session: the manager is its stable first window.
-	if !d.tmux.HasSession(SessionDesktop) {
-		if err := d.ensureFolder(mgrFolder); err != nil {
-			d.log.Printf("ERROR: ensure %s folder: %v", mgrName, err)
-			return
-		}
-		if err := d.tmux.NewSession(SessionDesktop, mgrName, mgrFolder, mgrCmd); err != nil {
-			d.log.Printf("ERROR: bootstrap Desktop with %s: %v", mgrName, err)
-			return
-		}
-	} else {
-		deskWins, err := d.tmux.ListWindows(SessionDesktop)
-		if err != nil {
-			d.log.Printf("ERROR: list Desktop windows: %v", err)
-			return
-		}
-		if !hasWindow(deskWins, mgrName) {
-			// The manager window was killed; recreate it as the first
-			// window (harness restart).
-			if err := d.ensureFolder(mgrFolder); err != nil {
-				d.log.Printf("ERROR: ensure %s folder: %v", mgrName, err)
-				return
-			}
-			front := 0
-			if len(deskWins) > 0 {
-				front = deskWins[0].Index
-			}
-			if err := d.tmux.NewWindowBefore(SessionDesktop+":"+itoa(front),
-				mgrName, mgrFolder, mgrCmd); err != nil {
-				d.log.Printf("ERROR: recreate %s window in Desktop: %v", mgrName, err)
-				return
-			}
-		}
-	}
-
-	// 3. Background session: the authoritative home of the agent
-	// windows. Created (with the first agent's window) as soon as any
-	// agent is configured; with no agents there is nothing to host.
-	if _, err := d.tmux.ListWindows(SessionBackground); err != nil && len(cfg.Agents) > 0 {
-		if err := d.ensureAgentWindow(cfg.Agents[0], true); err != nil {
-			d.log.Printf("ERROR: bootstrap Background: %v", err)
-			return
-		}
-	}
-
-	// 4. Per-agent state: window existence and link state.
-	if len(cfg.Agents) == 0 {
+	canonical, ok := d.reconcileAgents()
+	if !ok {
 		return
 	}
-	bgWins, err := d.tmux.ListWindows(SessionBackground)
-	if err != nil {
-		d.log.Printf("ERROR: list Background windows: %v", err)
-		return
-	}
-	deskWins, err := d.tmux.ListWindows(SessionDesktop)
-	if err != nil {
-		d.log.Printf("ERROR: list Desktop windows: %v", err)
-		return
-	}
-	nextIdx := lastIndex(deskWins) + 1
-	for _, a := range cfg.Agents {
-		if !hasWindow(bgWins, a.Name) {
-			if err := d.ensureAgentWindow(a, false); err != nil {
-				d.log.Printf("ERROR: create agent %q: %v", a.Name, err)
-				continue
-			}
-		}
-		inDesktop := hasWindow(deskWins, a.Name)
-		switch {
-		case a.Linked && !inDesktop:
-			target := SessionDesktop + ":" + itoa(nextIdx)
-			if err := d.tmux.LinkWindow(SessionBackground+":"+a.Name, target); err != nil {
-				d.log.Printf("ERROR: link %q into Desktop: %v", a.Name, err)
-				continue
-			}
-			nextIdx++
-		case !a.Linked && inDesktop:
-			if err := d.tmux.UnlinkWindow(SessionDesktop + ":" + a.Name); err != nil {
-				d.log.Printf("ERROR: unlink %q from Desktop: %v", a.Name, err)
-			}
-		}
-	}
-	// Compact index gaps left by unlinks (order preserved).
-	if err := d.tmux.RenumberWindows(SessionDesktop); err != nil {
-		d.log.Printf("ERROR: renumber Desktop: %v", err)
-	}
-
-	// 5. Orphans: windows in Background that no config entry claims.
-	// Destroy is postponed by design; report only. The folder is
-	// likewise never touched.
-	for _, w := range bgWins {
-		if !cfg.Has(w.Name) {
-			d.log.Printf("WARNING: window %q in Background has no config entry; "+
-				"left alone (destroy postponed)", w.Name)
-		}
-	}
+	d.reconcileDesktop(canonical)
 }
 
-// ensureAgentWindow makes sure the agent's folder exists as a
-// cohort-managed local git repo and then creates its tmux window in
-// Background. When session is true the Background session is created
-// with this window (session bootstrap).
-func (d *Daemon) ensureAgentWindow(a *config.Agent, session bool) error {
-	folder := a.ResolveFolder(d.root)
+// list returns all winlinks, recording an issue on failure.
+func (d *Daemon) list() ([]tmux.Window, bool) {
+	wins, err := d.tmux.ListAll()
+	if err != nil {
+		d.issue("tmux", "list windows: %v", err)
+		return nil, false
+	}
+	return wins, true
+}
+
+// reconcileManager makes the manager the first window of Desktop,
+// creating the session or the window when missing.
+func (d *Daemon) reconcileManager() bool {
+	wins, ok := d.list()
+	if !ok {
+		return false
+	}
+	name := config.ManagerName
+	desk := inSession(wins, SessionDesktop)
+	if len(desk) > 0 {
+		for _, w := range desk {
+			if w.Tag != name {
+				continue
+			}
+			if w.Index != desk[0].Index {
+				if err := d.tmux.MoveWindowBefore(SessionDesktop, w.Index, desk[0].Index); err != nil {
+					d.issue("manager", "move to the front of Desktop: %v", err)
+				} else if err := d.tmux.RenumberWindows(SessionDesktop); err != nil {
+					d.issue("tmux", "renumber Desktop: %v", err)
+				}
+			}
+			return true
+		}
+	}
+	folder := config.Folder(d.root, name)
 	if err := d.ensureFolder(folder); err != nil {
+		d.issue("manager", "%v", err)
+		return false
+	}
+	var err error
+	if len(desk) == 0 {
+		_, err = d.tmux.NewSession(SessionDesktop, name, name, folder, d.argv(d.cfg.Manager))
+	} else {
+		_, err = d.tmux.NewWindowBefore(fmt.Sprintf("%s:%d", SessionDesktop, desk[0].Index),
+			name, name, folder, d.argv(d.cfg.Manager))
+	}
+	if err != nil {
+		d.issue("manager", "create window: %v", err)
+		return false
+	}
+	return true
+}
+
+// reconcileAgents makes sure every configured agent has exactly one
+// window that lives in Background. It returns each agent's window id.
+func (d *Daemon) reconcileAgents() (map[string]string, bool) {
+	wins, ok := d.list()
+	if !ok {
+		return nil, false
+	}
+	bg := inSession(wins, SessionBackground)
+	bgNext := 0
+	if len(bg) > 0 {
+		bgNext = bg[len(bg)-1].Index + 1
+	}
+	canonical := map[string]string{}
+	for _, a := range d.cfg.Agents {
+		key := "agent " + a.Name
+		ids := distinctIDs(wins, a.Name)
+		if len(ids) > 1 {
+			d.issue(key+" duplicates", "%d windows are tagged %q (%s); using %s, the others are left alone",
+				len(ids), a.Name, strings.Join(ids, " "), ids[0])
+		}
+		if len(ids) == 0 {
+			folder := config.Folder(d.root, a.Name)
+			if err := d.ensureFolder(folder); err != nil {
+				d.issue(key, "%v", err)
+				continue
+			}
+			var id string
+			var err error
+			if len(bg) == 0 {
+				id, err = d.tmux.NewSession(SessionBackground, a.Name, a.Name, folder, d.argv(a.Command))
+			} else {
+				id, err = d.tmux.NewWindow(SessionBackground, a.Name, a.Name, folder, d.argv(a.Command))
+			}
+			if err != nil {
+				d.issue(key, "create window: %v", err)
+				continue
+			}
+			bg = append(bg, tmux.Window{Session: SessionBackground, ID: id})
+			bgNext++
+			canonical[a.Name] = id
+			continue
+		}
+		id := ids[0]
+		canonical[a.Name] = id
+		if hasID(bg, id) {
+			continue
+		}
+		// The window survived only in Desktop (e.g. the Background
+		// session was killed): bring it home instead of starting a
+		// second copy of the command.
+		if err := d.linkIntoBackground(id, &bg, &bgNext); err != nil {
+			d.issue(key, "re-link window %s into Background: %v", id, err)
+		}
+	}
+	// Report cohort windows in Background that no agent claims.
+	for _, w := range bg {
+		if w.Tag != "" && w.Tag != config.ManagerName && d.cfg.Agent(w.Tag) == nil {
+			d.issue("orphan "+w.ID, "window %s (%q) in Background has no config entry; left alone (destroy postponed)", w.ID, w.Tag)
+		}
+	}
+	return canonical, true
+}
+
+// linkIntoBackground links window id into Background, creating the
+// session (with a throwaway placeholder window) when it does not exist.
+func (d *Daemon) linkIntoBackground(id string, bg *[]tmux.Window, next *int) error {
+	if len(*bg) == 0 {
+		ph, err := d.tmux.NewSession(SessionBackground, "placeholder", "", d.root, []string{"sleep", "60"})
+		if err != nil {
+			return err
+		}
+		if err := d.tmux.LinkWindow(id, SessionBackground, 1000); err != nil {
+			return err
+		}
+		wins, err := d.tmux.ListAll()
+		if err != nil {
+			return err
+		}
+		for _, w := range inSession(wins, SessionBackground) {
+			if w.ID == ph {
+				if err := d.tmux.KillWindow(SessionBackground, w.Index); err != nil {
+					return err
+				}
+			}
+		}
+		*bg = append(*bg, tmux.Window{Session: SessionBackground, ID: id})
+		*next = 1001
+		return nil
+	}
+	if err := d.tmux.LinkWindow(id, SessionBackground, *next); err != nil {
 		return err
 	}
-	if session {
-		return d.tmux.NewSession(SessionBackground, a.Name, folder, a.StartupCommand())
+	*bg = append(*bg, tmux.Window{Session: SessionBackground, ID: id})
+	*next++
+	return nil
+}
+
+// reconcileDesktop makes Desktop show exactly the manager plus the
+// windows of the agents configured as linked, in config order for new
+// links. Windows without a cohort tag are not cohort's and are left
+// alone.
+func (d *Daemon) reconcileDesktop(canonical map[string]string) {
+	wins, ok := d.list()
+	if !ok {
+		return
 	}
-	return d.tmux.NewWindow(SessionBackground, a.Name, folder, a.StartupCommand())
+	desk := inSession(wins, SessionDesktop)
+	if len(desk) == 0 {
+		return
+	}
+	want := map[string]bool{}
+	for _, a := range d.cfg.Agents {
+		if id, ok := canonical[a.Name]; ok && a.Linked {
+			want[id] = true
+		}
+	}
+	changed := false
+	for _, w := range desk {
+		if w.Tag == "" || w.Tag == config.ManagerName || want[w.ID] {
+			continue
+		}
+		if !linkedElsewhere(wins, w) {
+			// Unlinking would destroy it (tmux refuses anyway).
+			why := "has no config entry"
+			if d.cfg.Agent(w.Tag) != nil {
+				why = "is a duplicate of the agent's window"
+			}
+			d.issue("orphan "+w.ID, "window %s (%q) exists only in Desktop and %s; left alone (destroy postponed)", w.ID, w.Tag, why)
+			continue
+		}
+		if err := d.tmux.UnlinkWindow(SessionDesktop, w.Index); err != nil {
+			d.issue("agent "+w.Tag, "unlink from Desktop: %v", err)
+			continue
+		}
+		changed = true
+	}
+	next := desk[len(desk)-1].Index + 1
+	for _, a := range d.cfg.Agents {
+		id, ok := canonical[a.Name]
+		if !ok || !a.Linked || hasID(desk, id) {
+			continue
+		}
+		if err := d.tmux.LinkWindow(id, SessionDesktop, next); err != nil {
+			d.issue("agent "+a.Name, "link into Desktop: %v", err)
+			continue
+		}
+		next++
+		changed = true
+	}
+	if changed {
+		if err := d.tmux.RenumberWindows(SessionDesktop); err != nil {
+			d.issue("tmux", "renumber Desktop: %v", err)
+		}
+	}
+}
+
+// inSession returns the winlinks of one session in index order.
+func inSession(wins []tmux.Window, session string) []tmux.Window {
+	var out []tmux.Window
+	for _, w := range wins {
+		if w.Session == session {
+			out = append(out, w)
+		}
+	}
+	sort.Slice(out, func(i, j int) bool { return out[i].Index < out[j].Index })
+	return out
+}
+
+// distinctIDs returns the ids of the windows tagged tag, those in
+// Background first, each once.
+func distinctIDs(wins []tmux.Window, tag string) []string {
+	var ids []string
+	seen := map[string]bool{}
+	for _, pass := range []bool{true, false} {
+		for _, w := range wins {
+			if w.Tag == tag && (w.Session == SessionBackground) == pass && !seen[w.ID] {
+				seen[w.ID] = true
+				ids = append(ids, w.ID)
+			}
+		}
+	}
+	return ids
+}
+
+func hasID(wins []tmux.Window, id string) bool {
+	for _, w := range wins {
+		if w.ID == id {
+			return true
+		}
+	}
+	return false
+}
+
+// linkedElsewhere reports whether w's window is also linked into a
+// session other than w's own.
+func linkedElsewhere(wins []tmux.Window, w tmux.Window) bool {
+	for _, o := range wins {
+		if o.ID == w.ID && o.Session != w.Session {
+			return true
+		}
+	}
+	return false
 }
 
 // ensureFolder guarantees that folder exists as a local-only git repo.
@@ -384,14 +592,11 @@ func (d *Daemon) ensureAgentWindow(a *config.Agent, session bool) error {
 //   - present and marked cohort.managed=true -> kept (agent resume)
 //   - anything else -> error: cohort never adopts pre-existing folders
 func (d *Daemon) ensureFolder(folder string) error {
-	if _, err := os.Stat(filepath.Join(folder, ".git")); errors.Is(err, fs.ErrNotExist) {
-		if _, err := os.Stat(folder); !errors.Is(err, fs.ErrNotExist) {
-			return fmt.Errorf("folder %s already exists and is not a cohort-managed git repo", folder)
-		}
+	if _, err := os.Stat(folder); errors.Is(err, fs.ErrNotExist) {
 		if err := os.MkdirAll(folder, 0o755); err != nil {
 			return err
 		}
-		if err := d.gitInit(folder); err != nil {
+		if err := gitInit(folder); err != nil {
 			return fmt.Errorf("git init %s: %w", folder, err)
 		}
 		d.log.Printf("initialized local git repo %s", folder)
@@ -399,57 +604,36 @@ func (d *Daemon) ensureFolder(folder string) error {
 	} else if err != nil {
 		return err
 	}
-	out, err := git(folder, "config", "--get", gitManagedKey)
+	out, err := git(folder, "config", "--local", "--get", gitManagedKey)
 	if err != nil || strings.TrimSpace(out) != "true" {
-		return fmt.Errorf("folder %s already exists and is not a cohort-managed git repo", folder)
+		return fmt.Errorf("folder %s already exists and is not a cohort-managed git repo "+
+			"(if it is a restored copy of a cohort folder, adopt it with: git -C %s config %s true)",
+			folder, folder, gitManagedKey)
 	}
 	return nil
 }
 
-func (d *Daemon) gitInit(folder string) error {
-	if err := gitRun(folder, "init", "-b", "main"); err != nil {
+func gitInit(folder string) error {
+	if _, err := git(folder, "init", "-b", "main"); err != nil {
 		// Older git without -b.
-		if err2 := gitRun(folder, "init"); err2 != nil {
-			return err2
+		if _, err := git(folder, "init"); err != nil {
+			return err
 		}
 	}
-	return gitRun(folder, "config", gitManagedKey, "true")
+	_, err := git(folder, "config", "--local", gitManagedKey, "true")
+	return err
 }
 
 func git(dir string, args ...string) (string, error) {
-	full := append([]string{"-C", dir}, args...)
-	var out strings.Builder
-	cmd := exec.Command("git", full...)
+	var out, stderr strings.Builder
+	cmd := exec.Command("git", append([]string{"-C", dir}, args...)...)
 	cmd.Stdout = &out
-	cmd.Stderr = io.Discard
+	cmd.Stderr = &stderr
 	if err := cmd.Run(); err != nil {
+		if msg := strings.TrimSpace(stderr.String()); msg != "" {
+			return "", fmt.Errorf("%w: %s", err, msg)
+		}
 		return "", err
 	}
 	return out.String(), nil
 }
-
-func gitRun(dir string, args ...string) error {
-	_, err := git(dir, args...)
-	return err
-}
-
-func hasWindow(wins []tmux.Window, name string) bool {
-	for _, w := range wins {
-		if w.Name == name {
-			return true
-		}
-	}
-	return false
-}
-
-func lastIndex(wins []tmux.Window) int {
-	max := -1
-	for _, w := range wins {
-		if w.Index > max {
-			max = w.Index
-		}
-	}
-	return max
-}
-
-func itoa(i int) string { return strconv.Itoa(i) }

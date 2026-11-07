@@ -1,5 +1,9 @@
 // Package tmux is a thin wrapper around the tmux binary operating on
 // a dedicated, non-default tmux server (tmux -L <socket>).
+//
+// Windows are addressed by their server-unique window id (@N) or by
+// session:index taken from a fresh listing, never by name: tmux
+// resolves a name target as an index first and as a pattern last.
 package tmux
 
 import (
@@ -10,12 +14,18 @@ import (
 	"strings"
 )
 
-// Window describes a window in a session.
+// TagOption is the window user option cohort uses to mark the windows
+// it owns. Its value is the agent (or manager) name.
+const TagOption = "@cohort"
+
+// Window is one winlink: a window as seen from one session. A window
+// linked into two sessions appears twice, with the same ID.
 type Window struct {
-	Index int
-	Name  string
-	// Linked is 1 if the window is linked to more than one session.
-	Linked bool
+	Session string
+	Index   int
+	ID      string // @N, unique per server
+	Name    string
+	Tag     string // value of TagOption, "" if not a cohort window
 }
 
 // Server is a handle to a tmux server identified by its socket name.
@@ -33,9 +43,18 @@ func New(socket, configFile string) *Server {
 	return &Server{Socket: socket, ConfigFile: configFile}
 }
 
+// SocketArgs selects the server: -L <name>, or -S <path> when Socket
+// is a path (used by tests to keep sockets in a temp dir).
+func (s *Server) SocketArgs() []string {
+	if strings.Contains(s.Socket, "/") {
+		return []string{"-S", s.Socket}
+	}
+	return []string{"-L", s.Socket}
+}
+
 // run executes a tmux command against the server and returns stdout.
 func (s *Server) run(args ...string) (string, error) {
-	full := append([]string{"-L", s.Socket, "-f", s.ConfigFile}, args...)
+	full := append(s.SocketArgs(), append([]string{"-f", s.ConfigFile}, args...)...)
 	var stdout, stderr bytes.Buffer
 	cmd := exec.Command("tmux", full...)
 	cmd.Stdout = &stdout
@@ -51,85 +70,104 @@ func (s *Server) run(args ...string) (string, error) {
 }
 
 // HasSession reports whether the named session exists on the server.
-// A missing server counts as "no session".
+// A missing server counts as "no session". The "=" prefix makes tmux
+// match the name exactly instead of as a prefix.
 func (s *Server) HasSession(session string) bool {
-	_, err := s.run("has-session", "-t", session)
+	_, err := s.run("has-session", "-t", "="+session)
 	return err == nil
 }
 
-// NewSession creates a detached session whose first (and only) window
-// is named window and runs cmd from dir.
-func (s *Server) NewSession(session, window, dir, cmd string) error {
-	_, err := s.run("new-session", "-d", "-s", session, "-n", window, "-c", dir, "--", cmd)
+const listFormat = "#{session_name}\t#{window_index}\t#{window_id}\t#{" + TagOption + "}\t#{window_name}"
+
+// ListAll returns every winlink on the server. A server that is not
+// running has no windows.
+func (s *Server) ListAll() ([]Window, error) {
+	out, err := s.run("list-windows", "-a", "-F", listFormat)
+	if err != nil {
+		if strings.Contains(err.Error(), "no server running") ||
+			strings.Contains(err.Error(), "error connecting") {
+			return nil, nil
+		}
+		return nil, err
+	}
+	var wins []Window
+	for _, line := range strings.Split(strings.TrimSpace(out), "\n") {
+		parts := strings.SplitN(line, "\t", 5)
+		if len(parts) != 5 {
+			continue
+		}
+		idx, err := strconv.Atoi(parts[1])
+		if err != nil {
+			continue
+		}
+		wins = append(wins, Window{Session: parts[0], Index: idx, ID: parts[2], Tag: parts[3], Name: parts[4]})
+	}
+	return wins, nil
+}
+
+// NewSession creates a detached session whose only window is named
+// name, tagged tag, and runs argv from dir. Returns the window id.
+func (s *Server) NewSession(session, name, tag, dir string, argv []string) (string, error) {
+	return s.create(tag, append([]string{"new-session", "-d", "-s", session}, s.windowArgs(name, dir, argv)...))
+}
+
+// NewWindow appends a window to session. Returns the window id.
+func (s *Server) NewWindow(session, name, tag, dir string, argv []string) (string, error) {
+	return s.create(tag, append([]string{"new-window", "-d", "-t", session + ":"}, s.windowArgs(name, dir, argv)...))
+}
+
+// NewWindowBefore inserts a window before target (session:index).
+// Returns the window id.
+func (s *Server) NewWindowBefore(target, name, tag, dir string, argv []string) (string, error) {
+	return s.create(tag, append([]string{"new-window", "-d", "-b", "-t", target}, s.windowArgs(name, dir, argv)...))
+}
+
+func (s *Server) windowArgs(name, dir string, argv []string) []string {
+	return append([]string{"-P", "-F", "#{window_id}", "-n", name, "-c", dir, "--"}, argv...)
+}
+
+func (s *Server) create(tag string, args []string) (string, error) {
+	out, err := s.run(args...)
+	if err != nil {
+		return "", err
+	}
+	id := strings.TrimSpace(out)
+	if _, err := s.run("set-option", "-w", "-t", id, TagOption, tag); err != nil {
+		return id, err
+	}
+	return id, nil
+}
+
+// LinkWindow links the window with the given id into session at
+// index.
+func (s *Server) LinkWindow(id, session string, index int) error {
+	_, err := s.run("link-window", "-d", "-s", id, "-t", session+":"+strconv.Itoa(index))
 	return err
 }
 
-// NewWindow creates a new detached window named window in session,
-// running cmd from dir.
-func (s *Server) NewWindow(session, window, dir, cmd string) error {
-	_, err := s.run("new-window", "-d", "-t", session, "-n", window, "-c", dir, "--", cmd)
+// UnlinkWindow unlinks the winlink at session:index. tmux refuses if
+// that is the window's only session, so this never destroys a window.
+func (s *Server) UnlinkWindow(session string, index int) error {
+	_, err := s.run("unlink-window", "-t", session+":"+strconv.Itoa(index))
 	return err
 }
 
-// KillWindow destroys the window at target (e.g. "Desktop:foo").
-// If the window is linked into multiple sessions, it is destroyed in
-// all of them.
-func (s *Server) KillWindow(target string) error {
-	_, err := s.run("kill-window", "-t", target)
+// KillWindow destroys the window at session:index (in every session it
+// is linked into).
+func (s *Server) KillWindow(session string, index int) error {
+	_, err := s.run("kill-window", "-t", session+":"+strconv.Itoa(index))
 	return err
 }
 
-// NewWindowBefore creates a new detached window named window, inserted
-// before the given target window (e.g. "Desktop:0"), running cmd from
-// dir. Used to keep a window at the front of a session.
-func (s *Server) NewWindowBefore(target, window, dir, cmd string) error {
-	_, err := s.run("new-window", "-d", "-b", "-t", target, "-n", window, "-c", dir, "--", cmd)
-	return err
-}
-
-// LinkWindow links src (e.g. "Background:foo") into the session of
-// target at the given window index (e.g. "Desktop:3"). The target
-// index must not already be in use.
-func (s *Server) LinkWindow(src, target string) error {
-	_, err := s.run("link-window", "-s", src, "-t", target)
-	return err
-}
-
-// UnlinkWindow unlinks the window at target (e.g. "Desktop:foo") from
-// its session. The window remains linked in its other sessions
-// (Background), so it is not destroyed.
-func (s *Server) UnlinkWindow(target string) error {
-	_, err := s.run("unlink-window", "-t", target)
+// MoveWindowBefore moves the winlink at session:from in front of
+// session:to.
+func (s *Server) MoveWindowBefore(session string, from, to int) error {
+	_, err := s.run("move-window", "-b", "-s", session+":"+strconv.Itoa(from), "-t", session+":"+strconv.Itoa(to))
 	return err
 }
 
 // RenumberWindows renumbers the windows of a session without gaps.
 func (s *Server) RenumberWindows(session string) error {
-	_, err := s.run("move-window", "-r", "-t", session)
+	_, err := s.run("move-window", "-r", "-t", session+":")
 	return err
-}
-
-// ListWindows returns the windows of a session, in index order.
-func (s *Server) ListWindows(session string) ([]Window, error) {
-	out, err := s.run("list-windows", "-t", session,
-		"-F", "#{window_index}\t#{window_name}\t#{window_linked}")
-	if err != nil {
-		return nil, err
-	}
-	var wins []Window
-	for _, line := range strings.Split(strings.TrimSpace(out), "\n") {
-		if line == "" {
-			continue
-		}
-		parts := strings.SplitN(line, "\t", 3)
-		if len(parts) != 3 {
-			continue
-		}
-		idx, err := strconv.Atoi(parts[0])
-		if err != nil {
-			continue
-		}
-		wins = append(wins, Window{Index: idx, Name: parts[1], Linked: parts[2] == "1"})
-	}
-	return wins, nil
 }
