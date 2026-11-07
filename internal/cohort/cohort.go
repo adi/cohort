@@ -65,6 +65,7 @@ type Daemon struct {
 
 	issues     map[string]string // problems found in the current tick
 	lastIssues map[string]string // problems reported after the last tick
+	wroteOnce  bool              // status.json written by this process
 }
 
 func newDaemon(root, socket string, logw io.Writer) *Daemon {
@@ -229,8 +230,9 @@ func (d *Daemon) report() {
 		}
 	}
 	d.lastIssues = d.issues
-	if changed {
+	if changed || !d.wroteOnce {
 		d.writeStatus()
+		d.wroteOnce = true
 	}
 }
 

@@ -134,6 +134,9 @@ func TestDaemonNeverRewritesConfig(t *testing.T) {
 	h.config(compact)
 	h.tick()
 	h.tick()
+	if _, err := os.Stat(filepath.Join(h.d.root, "status.json")); err != nil {
+		t.Fatalf("status.json not written without issues: %v", err)
+	}
 	if got := h.read(); got != compact {
 		t.Fatalf("config rewritten to %q", got)
 	}
