@@ -140,9 +140,12 @@ func Run() error {
 
 // DefaultManagerCommand resumes the manager's last claude session or
 // starts a fresh one, with the seeded cohort-team mod (the /team slash
-// command) loaded. It runs through a login shell, so ~ expands.
-const DefaultManagerCommand = "claude --plugin-dir ~/.cohort/cohort-manager/mods/cohort-team --continue" +
-	" || claude --plugin-dir ~/.cohort/cohort-manager/mods/cohort-team"
+// command) loaded. The manager runs unattended, so it skips permission
+// prompts: a prompt nobody answers would stall every change it makes.
+// It runs through a login shell, so ~ expands.
+const DefaultManagerCommand = "claude " + managerFlags + " --continue || claude " + managerFlags
+
+const managerFlags = "--plugin-dir ~/.cohort/cohort-manager/mods/cohort-team --dangerously-skip-permissions"
 
 // firstStart asks for the manager command when there is no config yet
 // and cohort was started from a terminal. (Without a terminal, the

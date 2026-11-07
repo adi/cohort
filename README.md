@@ -209,9 +209,12 @@ cohort
 
 - **In a terminal** it is your way in: the first time, it asks for the
   manager command (Enter takes the default, `claude --plugin-dir
-  ~/.cohort/cohort-manager/mods/cohort-team --continue || claude
-  --plugin-dir ~/.cohort/cohort-manager/mods/cohort-team`) and writes
-  `config.json`; if the daemon isn't
+  ~/.cohort/cohort-manager/mods/cohort-team
+  --dangerously-skip-permissions --continue || claude --plugin-dir
+  ~/.cohort/cohort-manager/mods/cohort-team
+  --dangerously-skip-permissions`) and writes `config.json`. The
+  manager runs unattended, hence no permission prompts; as root, where
+  claude refuses that flag, use `--permission-mode auto` instead; if the daemon isn't
   running it starts the service (`systemctl --user start cohort`, on
   macOS `launchctl bootstrap`/`kickstart` of the launchd agent);
   then it attaches you to Desktop. Run from inside cohort's tmux, it

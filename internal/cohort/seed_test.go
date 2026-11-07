@@ -115,7 +115,8 @@ func TestTeamSeedPortable(t *testing.T) {
 		t.Fatal(err)
 	}
 	const mod = "~/.cohort/cohort-manager/mods/cohort-team"
-	if strings.Count(DefaultManagerCommand, "--plugin-dir "+mod) != 2 || !strings.Contains(DefaultManagerCommand, "--continue ||") {
+	if strings.Count(DefaultManagerCommand, "--plugin-dir "+mod) != 2 || !strings.Contains(DefaultManagerCommand, "--continue ||") ||
+		strings.Count(DefaultManagerCommand, "--dangerously-skip-permissions") != 2 {
 		t.Fatalf("default manager command: %q", DefaultManagerCommand)
 	}
 	if _, err := managerSeed.ReadFile(seedRoot + "/mods/cohort-team/.claude-plugin/plugin.json"); err != nil {
