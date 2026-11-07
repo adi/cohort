@@ -167,6 +167,9 @@ agent, so that step is yours to choose.
 From source: `go build -o ~/.cohort/bin/cohort .`, then the steps in
 `contrib/cohort.service`.
 
+Coming from [`be`](https://github.com/adi/be) or
+[`team`](https://github.com/adi/team)? See [MIGRATING.md](MIGRATING.md).
+
 ### Releases
 
 Pushing a tag `v*` makes GitHub Actions run the tests, build
