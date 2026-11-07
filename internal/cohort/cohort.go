@@ -140,7 +140,7 @@ func (d *Daemon) loop() error {
 func (d *Daemon) reloadConfig() bool {
 	st, err := os.Stat(d.cfgPath)
 	if errors.Is(err, fs.ErrNotExist) {
-		d.cfg = &config.Config{Manager: &config.Manager{Harness: "claude"}}
+		d.cfg = &config.Config{Manager: config.DefaultManagerCommand, Agents: []*config.Agent{}}
 		if err := config.Save(d.cfgPath, d.cfg); err != nil {
 			d.log.Printf("ERROR: write default config: %v", err)
 			return false
@@ -233,13 +233,12 @@ func stamp(st os.FileInfo) int64 {
 // It is idempotent; errors are logged and retried on the next pass.
 func (d *Daemon) reconcile() {
 	cfg := d.cfg
-	if cfg == nil || cfg.Manager == nil {
-		d.log.Printf("ERROR: no manager settings in config")
+	if cfg == nil {
 		return
 	}
 	mgrName := config.ManagerName
-	mgrFolder := cfg.Manager.ResolveFolder(d.root)
-	mgrCmd := cfg.Manager.StartupCommand()
+	mgrFolder := config.ManagerFolder(d.root)
+	mgrCmd := cfg.ManagerCommand()
 
 	// 1. The manager window is stable in Desktop only; it must never
 	// exist in Background. Remove legacy/rogue copies.

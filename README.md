@@ -44,11 +44,7 @@ non-default tmux server.
 
 ```json
 {
-  "manager": {
-    "harness": "claude",
-    "command": "claude --model opus"    // optional, overrides harness default
-    // "folder": "~/.cohort/cohort-manager"  // optional, the default
-  },
+  "manager": "claude --model opus",
   "agents": [
     {
       "name": "codex-api",
@@ -61,17 +57,19 @@ non-default tmux server.
 }
 ```
 
-- `manager` is the distinct settings block for the cohort manager:
-  harness/command are customizable there; the manager window is the
-  stable first window of Desktop and never exists in Background.
+- `manager` is the cohort manager's startup command (tmux shell
+  command); omit it for the default `"claude"`. Everything else about
+  the manager is reserved and hardcoded: it is always claude code
+  running in `~/.cohort/cohort-manager`, and its window is the stable
+  first window of Desktop, never in Background.
 - Agent `name` is the tmux window name; letters, digits, `-`, `_` only.
   `cohort-manager` is reserved and never valid in `agents`.
 - Agent `harness` picks a default startup command from: `claude`,
   `codex`, `pi`, `opencode`. Override with `command`.
 - `linked` controls whether the window is linked into Desktop.
-- cohort ensures the `manager` block exists (defaulting to the `claude`
-  harness) and migrates legacy configs that had the manager as an
-  agents entry, persisting the normalized form back to the file.
+- cohort migrates legacy configs that had the manager as an agents
+  entry (hoisting its command into the `manager` setting), persisting
+  the normalized form back to the file.
 
 ## Operations
 

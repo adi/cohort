@@ -17,47 +17,15 @@ import (
 // stable first window; it is not part of the agents list.
 const ManagerName = "cohort-manager"
 
-// Manager holds the settings of the cohort manager agent. It is
-// distinct from the agents list: its window is stable in Desktop and
-// never exists in Background.
-type Manager struct {
-	// Harness identifies the LLM harness (claude, codex, pi,
-	// opencode...). Determines the default startup command unless
-	// Command is set. Defaults to "claude".
-	Harness string `json:"harness,omitempty"`
+// DefaultManagerCommand is the manager's startup command when the
+// config does not override it. The manager is reserved: it is always
+// claude code running in ~/.cohort/cohort-manager — only the exact
+// startup command is customizable.
+const DefaultManagerCommand = "claude"
 
-	// Command overrides the harness default startup command.
-	// Passed to tmux as a shell command.
-	Command string `json:"command,omitempty"`
-
-	// Folder defaults to ~/.cohort/cohort-manager when empty.
-	Folder string `json:"folder,omitempty"`
-}
-
-// Validate checks the manager settings without mutating them.
-func (m *Manager) Validate() error {
-	if m.Command == "" {
-		if _, ok := HarnessCommands[m.Harness]; !ok {
-			return fmt.Errorf("manager: unknown harness %q and no command given", m.Harness)
-		}
-	}
-	return nil
-}
-
-// StartupCommand resolves the command tmux should run in the window.
-func (m *Manager) StartupCommand() string {
-	if m.Command != "" {
-		return m.Command
-	}
-	return HarnessCommands[m.Harness]
-}
-
-// ResolveFolder returns the manager's absolute folder path.
-func (m *Manager) ResolveFolder(root string) string {
-	if m.Folder == "" {
-		return filepath.Join(root, ManagerName)
-	}
-	return Expand(m.Folder)
+// ManagerFolder returns the manager's absolute folder path (fixed).
+func ManagerFolder(root string) string {
+	return filepath.Join(root, ManagerName)
 }
 
 // Agent is one LLM harness running in one folder, materialized as a
@@ -137,18 +105,24 @@ func Expand(p string) string {
 
 // Config is the root of config.json.
 type Config struct {
-	Manager *Manager `json:"manager"`
+	// Manager is the cohort manager's startup command (tmux shell
+	// command). Empty means DefaultManagerCommand. Everything else
+	// about the manager is reserved and hardcoded.
+	Manager string   `json:"manager,omitempty"`
 	Agents  []*Agent `json:"agents"`
 }
 
-// Validate validates the manager settings and all agents, and
-// rejects duplicates and the reserved manager name in agents.
-func (c *Config) Validate() error {
-	if c.Manager != nil {
-		if err := c.Manager.Validate(); err != nil {
-			return err
-		}
+// ManagerCommand resolves the manager's startup command.
+func (c *Config) ManagerCommand() string {
+	if c.Manager != "" {
+		return c.Manager
 	}
+	return DefaultManagerCommand
+}
+
+// Validate validates all agents and rejects duplicates and the
+// reserved manager name in agents.
+func (c *Config) Validate() error {
 	seen := make(map[string]bool, len(c.Agents))
 	for _, a := range c.Agents {
 		if err := a.Validate(); err != nil {
@@ -178,34 +152,22 @@ func (c *Config) Agent(name string) *Agent {
 // Has reports whether an agent with the given name is configured.
 func (c *Config) Has(name string) bool { return c.Agent(name) != nil }
 
-// EnsureManager guarantees the manager settings exist (defaulting to
-// the claude harness) and migrates a legacy manager entry from the
-// agents list. Returns true if the config was modified.
+// EnsureManager migrates a legacy manager entry (the manager used to
+// be an agents entry) into the top-level manager setting. Returns
+// true if the config was modified.
 func (c *Config) EnsureManager() bool {
-	changed := false
-	if c.Manager == nil {
-		c.Manager = &Manager{Harness: "claude"}
-		changed = true
+	m := c.Agent(ManagerName)
+	if m == nil {
+		return false
 	}
-	if c.Manager.Harness == "" && c.Manager.Command == "" {
-		c.Manager.Harness = "claude"
-		changed = true
+	if c.Manager == "" {
+		c.Manager = m.StartupCommand()
+		if c.Manager == "" {
+			c.Manager = DefaultManagerCommand
+		}
 	}
-	// Legacy migration: the manager used to be an agents entry.
-	if m := c.Agent(ManagerName); m != nil {
-		if m.Harness != "" && c.Manager.Harness == "" {
-			c.Manager.Harness = m.Harness
-		}
-		if m.Command != "" && c.Manager.Command == "" {
-			c.Manager.Command = m.Command
-		}
-		if m.Folder != "" && c.Manager.Folder == "" {
-			c.Manager.Folder = m.Folder
-		}
-		c.removeAgent(ManagerName)
-		changed = true
-	}
-	return changed
+	c.removeAgent(ManagerName)
+	return true
 }
 
 // removeAgent deletes the agent with the given name, if present.

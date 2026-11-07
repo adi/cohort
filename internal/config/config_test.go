@@ -42,57 +42,78 @@ func TestAgentValidateDoesNotMutate(t *testing.T) {
 	}
 }
 
-func TestManagerSettings(t *testing.T) {
+func TestManagerSettingIsCommandOnly(t *testing.T) {
 	c := &Config{}
-	if !c.EnsureManager() {
-		t.Fatal("EnsureManager did not default the manager")
-	}
-	if c.Manager == nil || c.Manager.Harness != "claude" {
-		t.Fatalf("manager not defaulted: %+v", c.Manager)
-	}
-	if err := c.Validate(); err != nil {
-		t.Fatalf("default manager invalid: %v", err)
-	}
-	if got := c.Manager.StartupCommand(); got != "claude" {
+	if got := c.ManagerCommand(); got != DefaultManagerCommand {
 		t.Errorf("default manager command: %q", got)
 	}
-	if got := c.Manager.ResolveFolder("/r"); got != filepath.Join("/r", ManagerName) {
-		t.Errorf("default manager folder: %q", got)
+	if got := ManagerFolder("/r"); got != filepath.Join("/r", ManagerName) {
+		t.Errorf("manager folder: %q", got)
 	}
-	// Custom command overrides harness default.
-	c.Manager.Command = "claude --model opus"
-	if got := c.Manager.StartupCommand(); got != "claude --model opus" {
+	// The setting is the startup command; empty means default.
+	c.Manager = "claude --model opus"
+	if got := c.ManagerCommand(); got != "claude --model opus" {
 		t.Errorf("custom manager command: %q", got)
 	}
-	// Custom harness.
-	c.Manager.Command = ""
-	c.Manager.Harness = "codex"
-	if got := c.Manager.StartupCommand(); got != "codex" {
-		t.Errorf("codex harness command: %q", got)
+	c.Manager = "  " // blank-ish values are passed through verbatim
+	if got := c.ManagerCommand(); got != "  " {
+		t.Errorf("manager command not verbatim: %q", got)
 	}
 }
 
-func TestParseDefaultsManagerAndRejectsBad(t *testing.T) {
-	// missing manager -> defaulted, valid
+func TestEnsureManagerMigratesOnly(t *testing.T) {
+	c := &Config{Agents: []*Agent{{Name: "pi-api", Harness: "pi"}}}
+	if c.EnsureManager() {
+		t.Error("no legacy entry: EnsureManager reported change")
+	}
+	c.Agents = append([]*Agent{{Name: ManagerName, Harness: "claude", Command: "sleep 400"}}, c.Agents...)
+	if !c.EnsureManager() {
+		t.Error("legacy entry not migrated")
+	}
+	if c.Has(ManagerName) {
+		t.Error("legacy manager agent still in agents list")
+	}
+	if c.Manager != "sleep 400" {
+		t.Errorf("legacy command not hoisted: %q", c.Manager)
+	}
+	if !c.Has("pi-api") {
+		t.Error("other agents lost in migration")
+	}
+	// An explicit manager setting wins over the legacy entry.
+	c2 := &Config{Manager: "claude --flag",
+		Agents: []*Agent{{Name: ManagerName, Harness: "claude", Command: "sleep 400"}}}
+	if !c2.EnsureManager() {
+		t.Error("legacy entry not removed")
+	}
+	if c2.Manager != "claude --flag" {
+		t.Errorf("explicit manager setting clobbered: %q", c2.Manager)
+	}
+}
+
+func TestParseManagerAndRejectsBad(t *testing.T) {
+	// missing manager -> defaults at runtime, file untouched
 	c, err := Parse([]byte(`{"agents":[{"name":"a","harness":"pi"}]}`))
 	if err != nil {
 		t.Fatalf("missing manager rejected: %v", err)
 	}
-	if c.Manager == nil || c.Manager.Harness != "claude" {
-		t.Errorf("manager not defaulted: %+v", c.Manager)
+	if c.Manager != "" || c.ManagerCommand() != DefaultManagerCommand {
+		t.Errorf("manager defaulting broken: %q -> %q", c.Manager, c.ManagerCommand())
 	}
-	// unknown manager harness without command -> rejected
-	if _, err := Parse([]byte(`{"manager":{"harness":"vscode"}}`)); err == nil {
-		t.Error("unknown manager harness accepted")
+	// any non-empty manager string is a valid shell command
+	if c, err = Parse([]byte(`{"manager":"claude --model opus","agents":[]}`)); err != nil {
+		t.Fatalf("manager command rejected: %v", err)
+	}
+	if c.ManagerCommand() != "claude --model opus" {
+		t.Errorf("manager command: %q", c.ManagerCommand())
 	}
 	// duplicate agents -> rejected
 	if _, err := Parse([]byte(`{"agents":[{"name":"a","harness":"pi"},{"name":"a","harness":"pi"}]}`)); err == nil {
 		t.Error("duplicates accepted")
 	}
 	// The reserved name never survives Parse: it is always hoisted
-	// from agents into the manager settings (migration), so Validate's
+	// from agents into the manager setting (migration), so Validate's
 	// rejection only fires on direct struct use.
-	c, err = Parse([]byte(`{"manager":{"harness":"claude"},` +
+	c, err = Parse([]byte(`{"manager":"claude --flag",` +
 		`"agents":[{"name":"cohort-manager","harness":"pi","linked":true}]}`))
 	if err != nil {
 		t.Fatalf("hoisting rejected: %v", err)
@@ -100,7 +121,7 @@ func TestParseDefaultsManagerAndRejectsBad(t *testing.T) {
 	if c.Has(ManagerName) {
 		t.Error("reserved agent name left in agents")
 	}
-	if err := (&Config{Manager: &Manager{Harness: "claude"},
+	if err := (&Config{Manager: "claude",
 		Agents: []*Agent{{Name: ManagerName, Harness: "pi"}}}).Validate(); err == nil {
 		t.Error("reserved agent name accepted by Validate")
 	}
@@ -120,11 +141,19 @@ func TestParseMigratesLegacyManagerAgent(t *testing.T) {
 	if c.Has(ManagerName) {
 		t.Error("legacy manager agent still in agents list")
 	}
-	if c.Manager == nil || c.Manager.Command != "sleep 400" {
-		t.Errorf("legacy manager settings lost: %+v", c.Manager)
+	if c.Manager != "sleep 400" {
+		t.Errorf("legacy manager command lost: %q", c.Manager)
 	}
 	if !c.Has("pi-api") {
 		t.Error("other agents lost in migration")
+	}
+	// Legacy entry without a command -> default manager command.
+	c, err = Parse([]byte(`{"agents":[{"name":"cohort-manager","harness":"claude"}]}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if c.Manager != DefaultManagerCommand {
+		t.Errorf("legacy default command: %q", c.Manager)
 	}
 }
 
@@ -135,15 +164,15 @@ func TestLoadAndSave(t *testing.T) {
 	if _, err := Load(path); !os.IsNotExist(err) {
 		t.Errorf("missing file: got %v", err)
 	}
-	if err := Save(path, &Config{Manager: &Manager{Harness: "claude"}}); err != nil {
+	if err := Save(path, &Config{Manager: "claude --flag", Agents: []*Agent{}}); err != nil {
 		t.Fatal(err)
 	}
 	c, err := Load(path)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if c.Manager == nil || c.Manager.Harness != "claude" {
-		t.Errorf("round trip lost manager: %+v", c)
+	if c.Manager != "claude --flag" {
+		t.Errorf("round trip lost manager: %q", c.Manager)
 	}
 	// Canonical bytes: Marshal(Save output) == file content (used by
 	// the daemon to detect schema normalization needs).
