@@ -58,7 +58,7 @@ func TestTmuxConfLoads(t *testing.T) {
 	}
 	// Lock-down: kill and layout keys only show a message, menus are
 	// gone, R restarts with confirmation.
-	for _, k := range []string{"&", "x", "$", "!", "\"", "%", ".", ":", "<", ">"} {
+	for _, k := range []string{"&", "x", "$", "!", "\"", "%", ".", ":", "<", ">", "w", "s"} {
 		if got := tm("list-keys", "-T", "prefix", k); !strings.Contains(got, "disabled in cohort") {
 			t.Errorf("prefix %s not disabled: %q", k, got)
 		}
