@@ -56,4 +56,22 @@ func TestTmuxConfLoads(t *testing.T) {
 	if got := tm("show", "-gv", "window-status-current-format"); !strings.Contains(got, "reverse") {
 		t.Fatalf("defaults not applied: %q", got)
 	}
+	// Lock-down: kill and layout keys only show a message, menus are
+	// gone, R restarts with confirmation.
+	for _, k := range []string{"&", "x", "$", "!", "\"", "%", ".", ":", "<", ">"} {
+		if got := tm("list-keys", "-T", "prefix", k); !strings.Contains(got, "disabled in cohort") {
+			t.Errorf("prefix %s not disabled: %q", k, got)
+		}
+	}
+	if got := tm("list-keys", "-T", "prefix", "R"); !strings.Contains(got, "confirm-before") || !strings.Contains(got, "kill-window") {
+		t.Errorf("prefix R: %q", got)
+	}
+	for _, k := range []string{"MouseDown3Status", "M-MouseDown3Status", "M-MouseDown3Pane"} {
+		if got := tm("list-keys", "-T", "root", k); strings.Contains(got, "display-menu") {
+			t.Errorf("%s still opens a menu: %q", k, got)
+		}
+	}
+	if got := tm("list-keys", "-T", "root", "MouseDown3Pane"); strings.Contains(got, "display-menu") {
+		t.Errorf("MouseDown3Pane still opens a menu: %q", got)
+	}
 }

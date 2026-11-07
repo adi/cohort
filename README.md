@@ -68,6 +68,14 @@ command itself.
     over ssh) are touched.
   - Mouse, clipboard via OSC 52, passthrough, 100k history, window names
     locked to agent names.
+  - **Lock-down:** keyboard and mouse operations that would wreck the
+    layout are turned off: kill keys (`prefix &`, `x`), renaming
+    sessions (`$`), splitting/breaking/moving (`"`, `%`, `!`, `.`), the
+    command prompt (`:`), and the window/pane menus (`<`, `>`,
+    right-click on the status bar) that offer Kill. Instead,
+    **`prefix R`** restarts the current window after a confirmation.
+    tmux can't restrict its owner, so `tmux -L cohort <command>` from a
+    shell still does anything.
 
 ## Config (`~/.cohort/config.json`)
 
@@ -104,7 +112,7 @@ command itself.
 | Create an agent | add an entry to `agents` |
 | Show it in Desktop | `"linked": true` |
 | Hide it from Desktop | `"linked": false` |
-| Restart one agent (or the manager) | `tmux -L cohort kill-window -t <window>`; cohort recreates it within a second |
+| Restart one agent (or the manager) | `prefix R` in its window, or `tmux -L cohort kill-window -t <window>`; cohort recreates it within a second |
 | Restart all agents | `systemctl --user restart cohort` (stops the whole tmux server) |
 | Delete an agent | remove the entry. **Destroying windows is postponed**: the window is unlinked from Desktop and left running in Background, reported as an orphan; the folder is never touched |
 
