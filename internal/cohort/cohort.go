@@ -81,7 +81,7 @@ func newDaemon(root, socket string, logw io.Writer) *Daemon {
 
 // loginShell runs commands through the user's shell as an interactive
 // login shell, so windows get the same environment (PATH, API keys) as
-// a terminal, even when cohort itself runs under systemd.
+// a terminal, even when cohort itself runs under systemd or launchd.
 func loginShell() []string {
 	sh := os.Getenv("SHELL")
 	if sh == "" {
@@ -98,9 +98,10 @@ func (d *Daemon) argv(command string) []string {
 // on where it runs:
 //
 //   - in a terminal: it is the user's way in. It asks for the manager
-//     command if there is no config yet, starts the systemd service if
-//     the daemon isn't running, and attaches to the Desktop session.
-//   - without a terminal (systemd): it is the daemon, running until
+//     command if there is no config yet, starts the service (systemd or
+//     launchd) if the daemon isn't running, and attaches to the Desktop
+//     session.
+//   - without a terminal (systemd, launchd): it is the daemon, running until
 //     SIGINT/SIGTERM.
 func Run() error {
 	home, err := os.UserHomeDir()
@@ -184,7 +185,7 @@ func firstStart(cfgPath string) (bool, error) {
 // device too, so a mode check is not enough).
 func isTerminal(f *os.File) bool {
 	var t syscall.Termios
-	_, _, errno := syscall.Syscall(syscall.SYS_IOCTL, f.Fd(), syscall.TCGETS, uintptr(unsafe.Pointer(&t)))
+	_, _, errno := syscall.Syscall(syscall.SYS_IOCTL, f.Fd(), ioctlGetTermios, uintptr(unsafe.Pointer(&t)))
 	return errno == 0
 }
 
@@ -198,6 +199,9 @@ func (d *Daemon) loop() error {
 		select {
 		case <-sig:
 			d.log.Printf("shutting down")
+			if killServerOnExit {
+				d.tmux.KillServer()
+			}
 			return nil
 		case <-ticker.C:
 		}

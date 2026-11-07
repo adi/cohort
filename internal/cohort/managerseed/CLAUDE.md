@@ -11,7 +11,8 @@ files once and never touches them again.
 
 ## How cohort works
 
-`cohort` is a daemon (systemd user service `cohort`) that keeps a tmux
+`cohort` is a daemon (systemd user service `cohort` on Linux, launchd
+agent `com.github.adi.cohort` on macOS) that keeps a tmux
 server in line with one file. You drive it by editing that file.
 
 - **`~/.cohort/config.json`** is the single source of truth. Every
@@ -43,9 +44,11 @@ agent is doing or send it a prompt, use the `cohort-talk` skill.
 
 - Change agents and linking only through `config.json`. Links made
   directly in tmux are undone within a second.
-- Never kill or restart your own window (`Desktop:0`), and never run
-  `systemctl --user restart cohort` unless the user asks: both end
-  your session (the restart stops every agent too).
+- Never kill or restart your own window (`Desktop:0`), and never
+  restart the service (`systemctl --user restart cohort`, or
+  `launchctl kickstart -k gui/$(id -u)/com.github.adi.cohort` on
+  macOS) unless the user asks: both end your session (the restart
+  stops every agent too).
 - Never create an agent's folder yourself. cohort creates
   `~/.cohort/<name>` and refuses a folder that already exists.
 - A dead pane (the command exited) stays visible on purpose. Read it

@@ -17,7 +17,7 @@ import (
 // version is set at release build time with -ldflags "-X main.version=<tag>".
 var version = "dev"
 
-const usage = `usage: cohort            attach (terminal) or run the daemon (systemd)
+const usage = `usage: cohort            attach (terminal) or run the daemon (systemd/launchd)
        cohort upgrade    install the latest GitHub release
        cohort version    print the version`
 

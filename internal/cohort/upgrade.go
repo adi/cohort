@@ -55,7 +55,7 @@ func Upgrade(current string) error {
 	}
 	fmt.Printf("upgraded %s: %s -> %s\n", exe, current, tag)
 	fmt.Println("The running daemon keeps the old version until the service restarts:")
-	fmt.Println("  systemctl --user restart cohort   # restarts every agent too")
+	fmt.Println("  " + restartHint + "   # restarts every agent too")
 	return nil
 }
 

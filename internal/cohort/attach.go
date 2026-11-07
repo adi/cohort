@@ -18,7 +18,7 @@ import (
 const attachWait = 15 * time.Second
 
 // attach puts the user's terminal on the Desktop session: it starts the
-// cohort systemd service when no daemon is running, waits for Desktop,
+// cohort service (systemd or launchd) when no daemon is running, waits for Desktop,
 // then attaches (or switches, when already inside cohort's tmux).
 func attach(root string) error {
 	running, err := daemonRunning(root)
@@ -26,11 +26,8 @@ func attach(root string) error {
 		return err
 	}
 	if !running {
-		fmt.Println("cohort is not running; starting it: systemctl --user start cohort")
-		cmd := exec.Command("systemctl", "--user", "start", "cohort")
-		cmd.Stdout, cmd.Stderr = os.Stdout, os.Stderr
-		if err := cmd.Run(); err != nil {
-			return fmt.Errorf("start the cohort service (is contrib/cohort.service installed?): %w", err)
+		if err := startService(); err != nil {
+			return err
 		}
 	}
 	srv := tmux.New(SocketName, filepath.Join(root, "tmux.conf"))
@@ -93,7 +90,7 @@ func insideServer(srv *tmux.Server) bool {
 	if !strings.Contains(want, "/") {
 		want = filepath.Join(tmuxTmpdir(), want)
 	}
-	return sock == want
+	return sock == want || resolved(sock) == resolved(want)
 }
 
 // tmuxTmpdir is the directory tmux keeps -L sockets in.
@@ -103,6 +100,16 @@ func tmuxTmpdir() string {
 		dir = "/tmp"
 	}
 	return filepath.Join(dir, fmt.Sprintf("tmux-%d", os.Getuid()))
+}
+
+// resolved is path with symlinks resolved, or path when that fails.
+// tmux resolves its socket directory, so on macOS, where /tmp is a link
+// to /private/tmp, $TMUX names /private/tmp/tmux-<uid>/<socket>.
+func resolved(path string) string {
+	if r, err := filepath.EvalSymlinks(path); err == nil {
+		return r
+	}
+	return path
 }
 
 func envWithout(env []string, name string) []string {

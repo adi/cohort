@@ -1,0 +1,56 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!--
+  launchd user agent for the cohort daemon (macOS).
+
+  install.sh (README, Install) does all of this. By hand, with the
+  binary built with `go build -o ~/.cohort/bin/cohort .`:
+    ln -s ~/.cohort/bin/cohort ~/.local/bin/cohort
+    sed -e "s|@HOME@|$HOME|g" -e "s|@SHELL@|$SHELL|g" \
+        -e "s|@LANG@|${LANG:-en_US.UTF-8}|g" \
+        contrib/cohort.plist > ~/Library/LaunchAgents/com.github.adi.cohort.plist
+    cohort    # from a terminal: asks for the manager command, loads
+              # the agent (launchctl bootstrap) and attaches
+
+  Without a terminal (as here) cohort runs as the daemon. launchd starts
+  it at login (RunAtLoad) and restarts it when it fails (KeepAlive).
+
+  launchd hands a job a minimal environment, so PATH has to find tmux
+  and git (Homebrew on Apple silicon or Intel), SHELL picks the login
+  shell window commands run through (`$SHELL -lic`, which then gives
+  them the user's full PATH and API keys), and LANG makes tmux UTF-8.
+-->
+<plist version="1.0">
+<dict>
+  <key>Label</key>
+  <string>com.github.adi.cohort</string>
+  <key>ProgramArguments</key>
+  <array>
+    <string>@HOME@/.cohort/bin/cohort</string>
+  </array>
+  <key>RunAtLoad</key>
+  <true/>
+  <key>KeepAlive</key>
+  <dict>
+    <key>SuccessfulExit</key>
+    <false/>
+  </dict>
+  <key>ThrottleInterval</key>
+  <integer>2</integer>
+  <key>ProcessType</key>
+  <string>Interactive</string>
+  <key>EnvironmentVariables</key>
+  <dict>
+    <key>PATH</key>
+    <string>@HOME@/.local/bin:/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin</string>
+    <key>SHELL</key>
+    <string>@SHELL@</string>
+    <key>LANG</key>
+    <string>@LANG@</string>
+  </dict>
+  <key>StandardOutPath</key>
+  <string>@HOME@/.cohort/launchd.log</string>
+  <key>StandardErrorPath</key>
+  <string>@HOME@/.cohort/launchd.log</string>
+</dict>
+</plist>

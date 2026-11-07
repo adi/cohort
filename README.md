@@ -3,14 +3,14 @@
 A daemon that keeps a team of agents running on a dedicated,
 non-default tmux server. Each agent is a command running in its own
 folder. cohort doesn't know or care what the commands are (claude
-code, codex, pi, opencode, ...): to cohort they are plain Linux
+code, codex, pi, opencode, ...): to cohort they are plain shell
 commands, and starting fresh or resuming a session is up to the
 command itself.
 
 ## Architecture
 
-- cohort is a Go daemon with **no CLI options**, run by systemd until
-  `SIGINT`/`SIGTERM`. Run in a terminal, the same `cohort` command
+- cohort is a Go daemon with **no CLI options**, run by systemd
+  (Linux) or launchd (macOS) until `SIGINT`/`SIGTERM`. Run in a terminal, the same `cohort` command
   attaches you to Desktop instead (see Use). Only one instance runs at
   a time (`~/.cohort/cohort.lock`).
 - It is driven by the **cohort manager agent** (claude code), which
@@ -56,7 +56,8 @@ command itself.
   the mod with `--plugin-dir`.
 - Window commands run through the user's shell as an interactive login
   shell (`$SHELL -lic '<command>'`), so they get the same PATH and
-  environment (API keys, etc.) as a terminal, even under systemd.
+  environment (API keys, etc.) as a terminal, even under systemd or
+  launchd.
 - The private server uses its own tmux config, `~/.cohort/tmux.conf`,
   passed with `-f` on every invocation, so `~/.tmux.conf` is never
   read. tmux reads `-f` only at server start, and cohort starts the
@@ -122,7 +123,7 @@ command itself.
 | Show it in Desktop | `"linked": true` |
 | Hide it from Desktop | `"linked": false` |
 | Restart one agent (or the manager) | `prefix R` in its window, or `tmux -L cohort kill-window -t <window>`; cohort recreates it within a second |
-| Restart all agents | `systemctl --user restart cohort` (stops the whole tmux server) |
+| Restart all agents | `systemctl --user restart cohort`, on macOS `launchctl kickstart -k gui/$(id -u)/com.github.adi.cohort` (stops the whole tmux server) |
 | Delete an agent | remove the entry. **Destroying windows is postponed**: the window is unlinked from Desktop and left running in Background, reported as an orphan; the folder is never touched |
 
 Windows are `remain-on-exit on`: when a command exits, its window
@@ -141,17 +142,21 @@ the window and cohort recreates it.
 
 ## Install
 
-Linux (amd64 or arm64), with tmux, git and a systemd user session:
+Linux with a systemd user session, or macOS (amd64 or arm64 either
+way), with tmux and git:
 
 ```sh
 curl -fsSL https://github.com/adi/cohort/releases/latest/download/install.sh | sh
 ```
 
 This installs the latest release to `~/.cohort/bin/cohort` (linked
-from `~/.local/bin/cohort`), checks it against the release's
-`SHA256SUMS`, installs and enables the `cohort` systemd user service,
-and enables linger so cohort starts at boot. It doesn't start the
-service; run `cohort` from a terminal for that. Pin a version with
+from `~/.local/bin/cohort`) and checks it against the release's
+`SHA256SUMS`. On Linux it installs and enables the `cohort` systemd
+user service and enables linger so cohort starts at boot. On macOS it
+installs the launchd user agent
+`~/Library/LaunchAgents/com.github.adi.cohort.plist`, which starts
+cohort at login. It doesn't start the service; run `cohort` from a
+terminal for that. Pin a version with
 `COHORT_VERSION=v1.2.3` before `sh`.
 
 Upgrade to the latest release:
@@ -161,21 +166,37 @@ cohort upgrade
 ```
 
 It replaces the binary only. The running daemon keeps the old version
-until `systemctl --user restart cohort`, which also restarts every
-agent, so that step is yours to choose.
+until the service restarts (`systemctl --user restart cohort`, or
+`launchctl kickstart -k gui/$(id -u)/com.github.adi.cohort` on
+macOS), which also restarts every agent, so that step is yours to
+choose.
 
 From source: `go build -o ~/.cohort/bin/cohort .`, then the steps in
-`contrib/cohort.service`.
+`contrib/cohort.service` (Linux) or `contrib/cohort.plist` (macOS).
+
+### macOS notes
+
+- launchd gives a job a minimal environment, so the plist sets `PATH`
+  (Homebrew's `/opt/homebrew/bin` and `/usr/local/bin`, for tmux and
+  git), `SHELL` and `LANG`, taken from your environment at install
+  time. Window commands still run through `$SHELL -lic` and get your
+  full login environment.
+- The tmux server leaves launchd's process group when it daemonizes,
+  so on `SIGTERM` the daemon stops it itself: stopping or restarting
+  the service stops every window, as on Linux. After a daemon crash
+  the windows keep running and the next daemon adopts them.
+- `~/.cohort/launchd.log` gets the daemon's stdout/stderr (the same
+  lines as `cohort.log`, plus anything printed on a crash).
 
 Coming from [`be`](https://github.com/adi/be) or
 [`team`](https://github.com/adi/team)? See [MIGRATING.md](MIGRATING.md).
 
 ### Releases
 
-Pushing a tag `v*` makes GitHub Actions run the tests, build
-`cohort-linux-amd64` and `cohort-linux-arm64` (version stamped from the
-tag), and publish a release with them, `SHA256SUMS`, `install.sh` and
-`cohort.service`.
+Pushing a tag `v*` makes GitHub Actions run the tests (on Linux and
+macOS), build `cohort-{linux,darwin}-{amd64,arm64}` (version stamped
+from the tag), and publish a release with them, `SHA256SUMS`,
+`install.sh`, `cohort.service` and `cohort.plist`.
 
 ## Use
 
@@ -191,10 +212,12 @@ cohort
   ~/.cohort/cohort-manager/mods/cohort-team --continue || claude
   --plugin-dir ~/.cohort/cohort-manager/mods/cohort-team`) and writes
   `config.json`; if the daemon isn't
-  running it starts the service (`systemctl --user start cohort`);
+  running it starts the service (`systemctl --user start cohort`, on
+  macOS `launchctl bootstrap`/`kickstart` of the launchd agent);
   then it attaches you to Desktop. Run from inside cohort's tmux, it
   switches to Desktop instead of nesting a client.
-- **Without a terminal** (as the systemd service) it is the daemon.
+- **Without a terminal** (as the systemd or launchd service) it is the
+  daemon.
   Without a config it waits for `config.json` to appear.
 
 The tmux server belongs to the service: stopping or restarting the

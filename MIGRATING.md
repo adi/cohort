@@ -121,6 +121,13 @@ moves to the manager's `teams.json`.
    rm ~/.local/bin/team
    ```
 
+   On macOS `team` runs from a launchd agent instead:
+
+   ```sh
+   launchctl bootout gui/$(id -u)/com.adi.team
+   rm ~/Library/LaunchAgents/com.adi.team.plist ~/.local/bin/team
+   ```
+
    and drop the `source-file .../team/tmux.conf` line from
    `~/.tmux.conf` (cohort's server has its own `~/.cohort/tmux.conf` with
    the same defaults). If you installed them, remove the `team` MCP

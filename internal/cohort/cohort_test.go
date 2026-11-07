@@ -22,7 +22,14 @@ func newHarness(t *testing.T) *harness {
 		t.Skip("tmux not installed")
 	}
 	root := t.TempDir()
-	socket := filepath.Join(t.TempDir(), "tmux.sock")
+	// Not t.TempDir(): it embeds the test name, and macOS caps unix
+	// socket paths at 104 bytes.
+	sockDir, err := os.MkdirTemp("", "cohort")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { os.RemoveAll(sockDir) })
+	socket := filepath.Join(sockDir, "tmux.sock")
 	d := newDaemon(root, socket, io.Discard)
 	d.shell = []string{"/bin/sh", "-c"}
 	if err := seedServerFiles(root); err != nil {

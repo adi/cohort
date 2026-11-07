@@ -191,6 +191,12 @@ func (s *Server) MoveWindowBefore(session, id string, to int) error {
 	return err
 }
 
+// KillServer stops the server and every window on it.
+func (s *Server) KillServer() error {
+	_, err := s.run("kill-server")
+	return err
+}
+
 // RenumberWindows renumbers the windows of a session without gaps.
 func (s *Server) RenumberWindows(session string) error {
 	_, err := s.run("move-window", "-r", "-t", session+":")
