@@ -13,11 +13,16 @@ non-default tmux server.
   - editing the declarative config `~/.cohort/config.json`
   - direct tmux manipulation on cohort's private server (`tmux -L cohort`)
 - Tmux server (socket `cohort`), two sessions:
-  - **Background** — the authoritative home of every agent window.
+  - **Background** — the authoritative home of the *agent* windows.
   - **Desktop** — the session a human attaches to. Its stable first
-    window is the cohort manager. Other agent windows are *linked*
-    into Desktop on demand (tmux `link-window`), so a window lives in
-    Background and is only displayed in Desktop.
+    window is the cohort manager, which lives *only* in Desktop (never
+    in Background). Other agent windows are *linked* into Desktop on
+    demand (tmux `link-window`), so a window lives in Background and
+    is only displayed in Desktop.
+- The manager's settings are special and distinct from agents: a
+  separate top-level `manager` setting in config.json, not an agents
+  entry. With no agents configured, Background doesn't exist at all;
+  it is created with the first agent's window.
 - Every agent `A` lives in the folder `~/.cohort/<A>`, created by
   cohort as a **local-only git repo** (no remote). Creating an agent
   whose folder already exists is an **error** — cohort never adopts
@@ -39,31 +44,34 @@ non-default tmux server.
 
 ```json
 {
+  "manager": {
+    "harness": "claude",
+    "command": "claude --model opus"    // optional, overrides harness default
+    // "folder": "~/.cohort/cohort-manager"  // optional, the default
+  },
   "agents": [
-    {
-      "name": "cohort-manager",
-      "harness": "claude",
-      "linked": true
-    },
     {
       "name": "codex-api",
       "harness": "codex",
-      "folder": "~/work/api",     // optional, defaults to ~/.cohort/<name>
-      "command": "codex --full-auto",  // optional, overrides harness default
+      "folder": "~/work/api",          // optional, defaults to ~/.cohort/<name>
+      "command": "codex --full-auto",   // optional, overrides harness default
       "linked": false
     }
   ]
 }
 ```
 
-- `name` is the tmux window name; letters, digits, `-`, `_` only.
-- `harness` picks a default startup command from: `claude`, `codex`,
-  `pi`, `opencode`. Override with `command`.
+- `manager` is the distinct settings block for the cohort manager:
+  harness/command are customizable there; the manager window is the
+  stable first window of Desktop and never exists in Background.
+- Agent `name` is the tmux window name; letters, digits, `-`, `_` only.
+  `cohort-manager` is reserved and never valid in `agents`.
+- Agent `harness` picks a default startup command from: `claude`,
+  `codex`, `pi`, `opencode`. Override with `command`.
 - `linked` controls whether the window is linked into Desktop.
-  The manager is **pinned**: always first window of Desktop, always
-  linked.
-- cohort ensures the manager entry exists (creating/pinning it in the
-  config if needed).
+- cohort ensures the `manager` block exists (defaulting to the `claude`
+  harness) and migrates legacy configs that had the manager as an
+  agents entry, persisting the normalized form back to the file.
 
 ## Operations
 
@@ -79,8 +87,9 @@ reconciles within a second (plus a drift-correcting pass every 10s):
 
 Windows are configured `remain-on-exit on`: when a harness exits, its
 window survives as a dead pane for inspection. "Restart an agent" is
-simply `tmux -L cohort kill-window -t Background:name` — cohort
-recreates it on the next drift pass. A
+simply `tmux -L cohort kill-window -t Background:name` (or
+`Desktop:cohort-manager` for the manager itself) — cohort recreates
+it on the next drift pass, the manager as Desktop's first window. A
 broken/invalid config is rejected and the previous state is kept;
 errors go to `~/.cohort/cohort.log`.
 

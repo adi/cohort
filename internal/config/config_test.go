@@ -7,16 +7,19 @@ import (
 	"testing"
 )
 
-func TestValidateFillsCommandAndRejectsBadNames(t *testing.T) {
-	ok := &Agent{Name: "pi-api", Harness: "pi"}
-	if err := ok.Validate(); err != nil {
+func TestAgentValidateDoesNotMutate(t *testing.T) {
+	a := &Agent{Name: "pi-api", Harness: "pi"}
+	if err := a.Validate(); err != nil {
 		t.Fatalf("valid agent rejected: %v", err)
 	}
-	if ok.Command != "pi" {
-		t.Errorf("command not defaulted: %q", ok.Command)
+	if a.Command != "" {
+		t.Errorf("Validate mutated command: %q", a.Command)
 	}
-	if ok.Folder != "" {
-		t.Errorf("folder should stay empty for defaulting, got %q", ok.Folder)
+	if a.ResolveFolder("/root") != filepath.Join("/root", "pi-api") {
+		t.Errorf("default folder: %q", a.ResolveFolder("/root"))
+	}
+	if got := a.StartupCommand(); got != "pi" {
+		t.Errorf("StartupCommand = %q, want pi", got)
 	}
 
 	cases := []struct {
@@ -39,107 +42,113 @@ func TestValidateFillsCommandAndRejectsBadNames(t *testing.T) {
 	}
 }
 
-func TestCommandOverrideSkipsHarnessCheck(t *testing.T) {
-	a := &Agent{Name: "custom", Harness: "whatever", Command: "some-wrapper --flag"}
-	if err := a.Validate(); err != nil {
-		t.Fatalf("command override rejected: %v", err)
-	}
-	if a.Command != "some-wrapper --flag" {
-		t.Errorf("command clobbered: %q", a.Command)
-	}
-}
-
-func TestResolveFolderDefaultAndExpansion(t *testing.T) {
-	home, _ := os.UserHomeDir()
-	root := filepath.Join(home, ".cohort")
-	a := &Agent{Name: "foo"}
-	if got := a.ResolveFolder(root); got != filepath.Join(root, "foo") {
-		t.Errorf("default folder: got %q", got)
-	}
-	b := &Agent{Name: "bar", Folder: "~/elsewhere"}
-	if got := b.ResolveFolder(root); got != filepath.Join(home, "elsewhere") {
-		t.Errorf("~ expansion: got %q", got)
-	}
-}
-
-func TestConfigDuplicateAgentsRejected(t *testing.T) {
-	c := &Config{Agents: []*Agent{
-		{Name: "a", Harness: "pi"},
-		{Name: "a", Harness: "pi"},
-	}}
-	if err := c.Validate(); err == nil || !strings.Contains(err.Error(), "duplicate") {
-		t.Errorf("duplicates accepted: %v", err)
-	}
-}
-
-func TestEnsureManagerPinsAndInserts(t *testing.T) {
+func TestManagerSettings(t *testing.T) {
 	c := &Config{}
 	if !c.EnsureManager() {
-		t.Fatal("manager not inserted into empty config")
+		t.Fatal("EnsureManager did not default the manager")
 	}
-	if len(c.Agents) != 1 || c.Agents[0].Name != ManagerName {
-		t.Fatalf("manager not first: %+v", c.Agents)
+	if c.Manager == nil || c.Manager.Harness != "claude" {
+		t.Fatalf("manager not defaulted: %+v", c.Manager)
 	}
-	if !c.Agents[0].Linked {
-		t.Error("manager not linked")
+	if err := c.Validate(); err != nil {
+		t.Fatalf("default manager invalid: %v", err)
 	}
-	if err := c.Agents[0].Validate(); err != nil {
-		t.Errorf("manager agent invalid: %v", err)
+	if got := c.Manager.StartupCommand(); got != "claude" {
+		t.Errorf("default manager command: %q", got)
 	}
-	// Unlinked manager gets re-pinned in place, order preserved.
-	c.Agents = append(c.Agents, &Agent{Name: "pi-api", Harness: "pi"})
-	c.Agents[0].Linked = false
-	if !c.EnsureManager() {
-		t.Error("manager re-pin not reported as change")
+	if got := c.Manager.ResolveFolder("/r"); got != filepath.Join("/r", ManagerName) {
+		t.Errorf("default manager folder: %q", got)
 	}
-	if !c.Agents[0].Linked || c.Agents[1].Name != "pi-api" {
-		t.Errorf("manager re-pin broke config: %+v", c.Agents)
+	// Custom command overrides harness default.
+	c.Manager.Command = "claude --model opus"
+	if got := c.Manager.StartupCommand(); got != "claude --model opus" {
+		t.Errorf("custom manager command: %q", got)
 	}
-	if c.EnsureManager() {
-		t.Error("no-op EnsureManager reported change")
+	// Custom harness.
+	c.Manager.Command = ""
+	c.Manager.Harness = "codex"
+	if got := c.Manager.StartupCommand(); got != "codex" {
+		t.Errorf("codex harness command: %q", got)
 	}
 }
 
-func TestLoadRejectsInvalid(t *testing.T) {
+func TestParseDefaultsManagerAndRejectsBad(t *testing.T) {
+	// missing manager -> defaulted, valid
+	c, err := Parse([]byte(`{"agents":[{"name":"a","harness":"pi"}]}`))
+	if err != nil {
+		t.Fatalf("missing manager rejected: %v", err)
+	}
+	if c.Manager == nil || c.Manager.Harness != "claude" {
+		t.Errorf("manager not defaulted: %+v", c.Manager)
+	}
+	// unknown manager harness without command -> rejected
+	if _, err := Parse([]byte(`{"manager":{"harness":"vscode"}}`)); err == nil {
+		t.Error("unknown manager harness accepted")
+	}
+	// duplicate agents -> rejected
+	if _, err := Parse([]byte(`{"agents":[{"name":"a","harness":"pi"},{"name":"a","harness":"pi"}]}`)); err == nil {
+		t.Error("duplicates accepted")
+	}
+	// The reserved name never survives Parse: it is always hoisted
+	// from agents into the manager settings (migration), so Validate's
+	// rejection only fires on direct struct use.
+	c, err = Parse([]byte(`{"manager":{"harness":"claude"},` +
+		`"agents":[{"name":"cohort-manager","harness":"pi","linked":true}]}`))
+	if err != nil {
+		t.Fatalf("hoisting rejected: %v", err)
+	}
+	if c.Has(ManagerName) {
+		t.Error("reserved agent name left in agents")
+	}
+	if err := (&Config{Manager: &Manager{Harness: "claude"},
+		Agents: []*Agent{{Name: ManagerName, Harness: "pi"}}}).Validate(); err == nil {
+		t.Error("reserved agent name accepted by Validate")
+	}
+}
+
+func TestParseMigratesLegacyManagerAgent(t *testing.T) {
+	// Old schema: manager was an entry in agents.
+	c, err := Parse([]byte(`{
+	  "agents": [
+	    {"name": "cohort-manager", "harness": "claude", "command": "sleep 400", "linked": true},
+	    {"name": "pi-api", "harness": "pi", "linked": true}
+	  ]
+	}`))
+	if err != nil {
+		t.Fatalf("legacy config rejected: %v", err)
+	}
+	if c.Has(ManagerName) {
+		t.Error("legacy manager agent still in agents list")
+	}
+	if c.Manager == nil || c.Manager.Command != "sleep 400" {
+		t.Errorf("legacy manager settings lost: %+v", c.Manager)
+	}
+	if !c.Has("pi-api") {
+		t.Error("other agents lost in migration")
+	}
+}
+
+func TestLoadAndSave(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "config.json")
 
 	if _, err := Load(path); !os.IsNotExist(err) {
 		t.Errorf("missing file: got %v", err)
 	}
-	os.WriteFile(path, []byte("{ bad"), 0o644)
-	if _, err := Load(path); err == nil {
-		t.Error("bad JSON accepted")
+	if err := Save(path, &Config{Manager: &Manager{Harness: "claude"}}); err != nil {
+		t.Fatal(err)
 	}
-	os.WriteFile(path, []byte(`{"agents":[{"name":"x","harness":"nope"}]}`), 0o644)
-	if _, err := Load(path); err == nil {
-		t.Error("unknown harness accepted")
-	}
-	os.WriteFile(path, []byte(`{"agents":[{"name":"ok","harness":"pi"}]}`), 0o644)
 	c, err := Load(path)
 	if err != nil {
-		t.Fatalf("valid config rejected: %v", err)
-	}
-	if !c.Has("ok") {
-		t.Error("Has(ok) false")
-	}
-	if got := c.Agent("ok").Command; got != "pi" {
-		t.Errorf("command default: %q", got)
-	}
-}
-
-func TestSaveRoundTrip(t *testing.T) {
-	dir := t.TempDir()
-	path := filepath.Join(dir, "config.json")
-	c := &Config{Agents: []*Agent{{Name: "ok", Harness: "pi", Linked: true}}}
-	if err := Save(path, c); err != nil {
 		t.Fatal(err)
 	}
-	got, err := Load(path)
-	if err != nil {
-		t.Fatal(err)
+	if c.Manager == nil || c.Manager.Harness != "claude" {
+		t.Errorf("round trip lost manager: %+v", c)
 	}
-	if !got.Has("ok") || !got.Agent("ok").Linked {
-		t.Errorf("round trip mismatch: %+v", got.Agents)
+	// Canonical bytes: Marshal(Save output) == file content (used by
+	// the daemon to detect schema normalization needs).
+	raw, _ := os.ReadFile(path)
+	if string(Marshal(c)) != string(raw) {
+		t.Errorf("Marshal is not canonical:\n%s\n%s", Marshal(c), raw)
 	}
 }

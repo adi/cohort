@@ -21,24 +21,6 @@ func TestHasWindow(t *testing.T) {
 	}
 }
 
-func TestFirstFreeIndex(t *testing.T) {
-	cases := []struct {
-		wins []tmux.Window
-		want int
-	}{
-		{nil, 0},
-		{[]tmux.Window{{Index: 0}}, 1},
-		{[]tmux.Window{{Index: 1, Name: "m"}}, 0},
-		{[]tmux.Window{{Index: 0}, {Index: 2}}, 1},
-		{[]tmux.Window{{Index: 0}, {Index: 1}, {Index: 2}}, 3},
-	}
-	for _, c := range cases {
-		if got := firstFreeIndex(c.wins); got != c.want {
-			t.Errorf("firstFreeIndex(%v) = %d, want %d", c.wins, got, c.want)
-		}
-	}
-}
-
 func TestLastIndex(t *testing.T) {
 	if got := lastIndex(nil); got != -1 {
 		t.Errorf("lastIndex(nil) = %d", got)

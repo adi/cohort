@@ -13,6 +13,7 @@
 package cohort
 
 import (
+	"bytes"
 	"errors"
 	"fmt"
 	"io"
@@ -38,8 +39,6 @@ const (
 	SessionBackground = "Background"
 	// SessionDesktop is the session the human looks at.
 	SessionDesktop = "Desktop"
-	// tempWindow is the throwaway window used to bootstrap Desktop.
-	tempWindow = "_init"
 	// gitManagedKey marks a repo folder as created/owned by cohort.
 	gitManagedKey = "cohort.managed"
 	// fullReconcileEvery forces a drift-correcting reconcile interval.
@@ -112,8 +111,15 @@ func (d *Daemon) loop() error {
 				d.lastFull = time.Now()
 				continue
 			}
-			// If the tmux server or a session died, repair immediately.
-			if !d.tmux.HasSession(SessionBackground) || !d.tmux.HasSession(SessionDesktop) {
+			// If the tmux server, the Desktop session, or (while any
+			// agent is configured) the Background session died, repair
+			// immediately.
+			nAgents := 0
+			if d.cfg != nil {
+				nAgents = len(d.cfg.Agents)
+			}
+			if !d.tmux.HasSession(SessionDesktop) ||
+				(nAgents > 0 && !d.tmux.HasSession(SessionBackground)) {
 				d.reconcile()
 				d.lastFull = time.Now()
 				continue
@@ -127,18 +133,21 @@ func (d *Daemon) loop() error {
 	}
 }
 
-// reloadConfig loads config.json when it changed on disk. Missing file
-// triggers bootstrap (default config with the manager agent).
+// reloadConfig loads config.json when it changed on disk. A missing
+// file triggers bootstrap (default config with the manager settings).
+// Schema upgrades (e.g. a legacy manager agents entry hoisted to the
+// top-level "manager" setting) are persisted back to the file.
 func (d *Daemon) reloadConfig() bool {
 	st, err := os.Stat(d.cfgPath)
 	if errors.Is(err, fs.ErrNotExist) {
-		d.cfg = &config.Config{}
-		d.cfg.EnsureManager()
+		d.cfg = &config.Config{Manager: &config.Manager{Harness: "claude"}}
 		if err := config.Save(d.cfgPath, d.cfg); err != nil {
 			d.log.Printf("ERROR: write default config: %v", err)
 			return false
 		}
-		d.cfgStamp = stamp(st)
+		if st, err := os.Stat(d.cfgPath); err == nil {
+			d.cfgStamp = stamp(st)
+		}
 		d.log.Printf("bootstrapped default config at %s", d.cfgPath)
 		return true
 	}
@@ -149,7 +158,12 @@ func (d *Daemon) reloadConfig() bool {
 	if s := stamp(st); s == d.cfgStamp {
 		return false
 	}
-	cfg, err := config.Load(d.cfgPath)
+	raw, err := os.ReadFile(d.cfgPath)
+	if err != nil {
+		d.log.Printf("ERROR: read config: %v", err)
+		return false
+	}
+	cfg, err := config.Parse(raw)
 	if err != nil {
 		// Keep last known-good config; a broken file must not tear
 		// down running agents.
@@ -157,13 +171,20 @@ func (d *Daemon) reloadConfig() bool {
 		d.cfgStamp = stamp(st)
 		return false
 	}
-	if cfg.EnsureManager() {
-		if err := config.Save(d.cfgPath, cfg); err != nil {
-			d.log.Printf("ERROR: pinning manager agent in config: %v", err)
-		}
-	}
 	d.cfg = cfg
 	d.cfgStamp = stamp(st)
+	// If defaults/migration changed the structure, persist the
+	// normalized form so the file on disk matches what we run.
+	if norm := config.Marshal(cfg); !bytes.Equal(norm, raw) {
+		if err := os.WriteFile(d.cfgPath, norm, 0o644); err != nil {
+			d.log.Printf("ERROR: persist normalized config: %v", err)
+		} else {
+			if st, err := os.Stat(d.cfgPath); err == nil {
+				d.cfgStamp = stamp(st)
+			}
+			d.log.Printf("normalized config (defaults/migration applied)")
+		}
+	}
 	return true
 }
 
@@ -212,57 +233,90 @@ func stamp(st os.FileInfo) int64 {
 // It is idempotent; errors are logged and retried on the next pass.
 func (d *Daemon) reconcile() {
 	cfg := d.cfg
-	if cfg == nil {
+	if cfg == nil || cfg.Manager == nil {
+		d.log.Printf("ERROR: no manager settings in config")
 		return
 	}
-	mgr := cfg.Agent(config.ManagerName)
-	if mgr == nil {
-		// Should not happen (EnsureManager), but be defensive.
-		d.log.Printf("ERROR: no %s agent in config", config.ManagerName)
-		return
-	}
+	mgrName := config.ManagerName
+	mgrFolder := cfg.Manager.ResolveFolder(d.root)
+	mgrCmd := cfg.Manager.StartupCommand()
 
-	// 1. Manager window must exist in Background (create the session
-	// with it if the session is missing).
-	bgWins, err := d.tmux.ListWindows(SessionBackground)
-	if err != nil {
-		if err := d.ensureAgentWindow(mgr, true); err != nil {
-			d.log.Printf("ERROR: bootstrap %s: %v", mgr.Name, err)
-			return
-		}
-		bgWins = []tmux.Window{{Index: 0, Name: mgr.Name}}
-	} else if !hasWindow(bgWins, mgr.Name) {
-		if err := d.ensureAgentWindow(mgr, false); err != nil {
-			d.log.Printf("ERROR: ensure %s window: %v", mgr.Name, err)
-			return
+	// 1. The manager window is stable in Desktop only; it must never
+	// exist in Background. Remove legacy/rogue copies.
+	if bgWins, err := d.tmux.ListWindows(SessionBackground); err == nil {
+		for _, w := range bgWins {
+			if w.Name != mgrName {
+				continue
+			}
+			// Target by index: several same-named windows may exist.
+			target := SessionBackground + ":" + itoa(w.Index)
+			if w.Linked {
+				// Old layout: manager window created in Background and
+				// linked into Desktop. Drop the Background link; the
+				// window stays (stable) in Desktop.
+				if err := d.tmux.UnlinkWindow(target); err != nil {
+					d.log.Printf("ERROR: unlink %s from Background: %v", mgrName, err)
+				}
+			} else {
+				// Rogue manager window living only in Background.
+				if err := d.tmux.KillWindow(target); err != nil {
+					d.log.Printf("ERROR: destroy rogue %s window in Background: %v", mgrName, err)
+				}
+			}
 		}
 	}
 
 	// 2. Desktop session: the manager is its stable first window.
 	if !d.tmux.HasSession(SessionDesktop) {
-		if err := d.bootstrapDesktop(mgr); err != nil {
-			d.log.Printf("ERROR: bootstrap Desktop: %v", err)
+		if err := d.ensureFolder(mgrFolder); err != nil {
+			d.log.Printf("ERROR: ensure %s folder: %v", mgrName, err)
+			return
+		}
+		if err := d.tmux.NewSession(SessionDesktop, mgrName, mgrFolder, mgrCmd); err != nil {
+			d.log.Printf("ERROR: bootstrap Desktop with %s: %v", mgrName, err)
 			return
 		}
 	} else {
-		d.cleanupTempWindows()
-		// Manager must always be linked into Desktop (pinned).
 		deskWins, err := d.tmux.ListWindows(SessionDesktop)
 		if err != nil {
 			d.log.Printf("ERROR: list Desktop windows: %v", err)
 			return
 		}
-		if !hasWindow(deskWins, mgr.Name) {
-			idx := firstFreeIndex(deskWins)
-			if err := d.tmux.LinkWindow(SessionBackground+":"+mgr.Name,
-				SessionDesktop+":"+itoa(idx)); err != nil {
-				d.log.Printf("ERROR: link %s into Desktop: %v", mgr.Name, err)
+		if !hasWindow(deskWins, mgrName) {
+			// The manager window was killed; recreate it as the first
+			// window (harness restart).
+			if err := d.ensureFolder(mgrFolder); err != nil {
+				d.log.Printf("ERROR: ensure %s folder: %v", mgrName, err)
+				return
+			}
+			front := 0
+			if len(deskWins) > 0 {
+				front = deskWins[0].Index
+			}
+			if err := d.tmux.NewWindowBefore(SessionDesktop+":"+itoa(front),
+				mgrName, mgrFolder, mgrCmd); err != nil {
+				d.log.Printf("ERROR: recreate %s window in Desktop: %v", mgrName, err)
+				return
 			}
 		}
 	}
 
-	// 3. Per-agent state: window existence and link state.
-	if bgWins, err = d.tmux.ListWindows(SessionBackground); err != nil {
+	// 3. Background session: the authoritative home of the agent
+	// windows. Created (with the first agent's window) as soon as any
+	// agent is configured; with no agents there is nothing to host.
+	if _, err := d.tmux.ListWindows(SessionBackground); err != nil && len(cfg.Agents) > 0 {
+		if err := d.ensureAgentWindow(cfg.Agents[0], true); err != nil {
+			d.log.Printf("ERROR: bootstrap Background: %v", err)
+			return
+		}
+	}
+
+	// 4. Per-agent state: window existence and link state.
+	if len(cfg.Agents) == 0 {
+		return
+	}
+	bgWins, err := d.tmux.ListWindows(SessionBackground)
+	if err != nil {
 		d.log.Printf("ERROR: list Background windows: %v", err)
 		return
 	}
@@ -279,17 +333,16 @@ func (d *Daemon) reconcile() {
 				continue
 			}
 		}
-		linked := a.Linked || a.Name == config.ManagerName
 		inDesktop := hasWindow(deskWins, a.Name)
 		switch {
-		case linked && !inDesktop:
+		case a.Linked && !inDesktop:
 			target := SessionDesktop + ":" + itoa(nextIdx)
 			if err := d.tmux.LinkWindow(SessionBackground+":"+a.Name, target); err != nil {
 				d.log.Printf("ERROR: link %q into Desktop: %v", a.Name, err)
 				continue
 			}
 			nextIdx++
-		case !linked && inDesktop:
+		case !a.Linked && inDesktop:
 			if err := d.tmux.UnlinkWindow(SessionDesktop + ":" + a.Name); err != nil {
 				d.log.Printf("ERROR: unlink %q from Desktop: %v", a.Name, err)
 			}
@@ -300,41 +353,15 @@ func (d *Daemon) reconcile() {
 		d.log.Printf("ERROR: renumber Desktop: %v", err)
 	}
 
-	// 4. Orphans: windows in Background that no config entry claims.
+	// 5. Orphans: windows in Background that no config entry claims.
 	// Destroy is postponed by design; report only. The folder is
 	// likewise never touched.
 	for _, w := range bgWins {
-		if w.Name == tempWindow {
-			continue
-		}
 		if !cfg.Has(w.Name) {
 			d.log.Printf("WARNING: window %q in Background has no config entry; "+
 				"left alone (destroy postponed)", w.Name)
 		}
 	}
-}
-
-// bootstrapDesktop creates the Desktop session with the manager window
-// as its first (only) window: create a temp window, link the manager
-// after it, kill the temp window, renumber.
-func (d *Daemon) bootstrapDesktop(mgr *config.Agent) error {
-	if err := d.tmux.NewSession(SessionDesktop, tempWindow, d.root, "sleep 1000"); err != nil {
-		return err
-	}
-	if err := d.tmux.LinkWindowAfter(
-		SessionBackground+":"+mgr.Name, SessionDesktop+":"+tempWindow); err != nil {
-		return err
-	}
-	if err := d.tmux.KillWindow(SessionDesktop + ":" + tempWindow); err != nil {
-		return err
-	}
-	return d.tmux.RenumberWindows(SessionDesktop)
-}
-
-// cleanupTempWindows removes leftover _init windows in Desktop (e.g. if
-// a previous bootstrap pass was interrupted).
-func (d *Daemon) cleanupTempWindows() {
-	d.tmux.KillWindow(SessionDesktop + ":" + tempWindow) // best effort
 }
 
 // ensureAgentWindow makes sure the agent's folder exists as a
@@ -347,9 +374,9 @@ func (d *Daemon) ensureAgentWindow(a *config.Agent, session bool) error {
 		return err
 	}
 	if session {
-		return d.tmux.NewSession(SessionBackground, a.Name, folder, a.Command)
+		return d.tmux.NewSession(SessionBackground, a.Name, folder, a.StartupCommand())
 	}
-	return d.tmux.NewWindow(SessionBackground, a.Name, folder, a.Command)
+	return d.tmux.NewWindow(SessionBackground, a.Name, folder, a.StartupCommand())
 }
 
 // ensureFolder guarantees that folder exists as a local-only git repo.
@@ -424,18 +451,6 @@ func lastIndex(wins []tmux.Window) int {
 		}
 	}
 	return max
-}
-
-func firstFreeIndex(wins []tmux.Window) int {
-	used := make(map[int]bool, len(wins))
-	for _, w := range wins {
-		used[w.Index] = true
-	}
-	for i := 0; ; i++ {
-		if !used[i] {
-			return i
-		}
-	}
 }
 
 func itoa(i int) string { return strconv.Itoa(i) }

@@ -79,18 +79,19 @@ func (s *Server) KillWindow(target string) error {
 	return err
 }
 
+// NewWindowBefore creates a new detached window named window, inserted
+// before the given target window (e.g. "Desktop:0"), running cmd from
+// dir. Used to keep a window at the front of a session.
+func (s *Server) NewWindowBefore(target, window, dir, cmd string) error {
+	_, err := s.run("new-window", "-d", "-b", "-t", target, "-n", window, "-c", dir, "--", cmd)
+	return err
+}
+
 // LinkWindow links src (e.g. "Background:foo") into the session of
 // target at the given window index (e.g. "Desktop:3"). The target
 // index must not already be in use.
 func (s *Server) LinkWindow(src, target string) error {
 	_, err := s.run("link-window", "-s", src, "-t", target)
-	return err
-}
-
-// LinkWindowAfter links src into the target session directly after the
-// given target window (used to position the manager window).
-func (s *Server) LinkWindowAfter(src, target string) error {
-	_, err := s.run("link-window", "-a", "-s", src, "-t", target)
 	return err
 }
 
