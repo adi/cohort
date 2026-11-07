@@ -71,7 +71,8 @@ command itself.
   - **Lock-down:** keyboard and mouse operations that would wreck the
     layout are turned off: kill keys (`prefix &`, `x`), renaming
     sessions (`$`), splitting/breaking/moving (`"`, `%`, `!`, `.`), the
-    command prompt (`:`), and the window/pane menus (`<`, `>`,
+    command prompt (`:`), the window and session lists (`w`, `s`, which
+    have their own kill keys), and the window/pane menus (`<`, `>`,
     right-click on the status bar) that offer Kill. Instead,
     **`prefix R`** restarts the current window after a confirmation.
     tmux can't restrict its owner, so `tmux -L cohort <command>` from a
