@@ -120,7 +120,7 @@ func Run() error {
 		}
 		return errors.New("another cohort daemon is already running")
 	}
-	if err := seedTmuxConf(filepath.Join(root, "tmux.conf")); err != nil {
+	if err := seedServerFiles(root); err != nil {
 		return err
 	}
 	logFile, err := os.OpenFile(filepath.Join(root, "cohort.log"),
@@ -281,41 +281,6 @@ func (d *Daemon) reloadConfig() {
 	d.log.Printf("config loaded: %d agent(s)", len(cfg.Agents))
 }
 
-// defaultTmuxConf is the initial server configuration. Once seeded,
-// the file belongs to the cohort manager agent to customize.
-const defaultTmuxConf = `# cohort server configuration.
-# This file is passed to tmux with -f so cohort's private server
-# (tmux -L cohort) never reads your ~/.tmux.conf.
-# Owned by the cohort manager agent: edit freely; restart the server
-# (tmux -L cohort kill-server, cohort re-creates it) to apply, or set
-# options live with: tmux -L cohort set-option ...
-
-set -g default-terminal "tmux-256color"
-set -g history-limit 100000
-set -g mouse on
-set -g status-position top
-set -g status-interval 5
-# Keep a window open (as a dead pane) when its command exits, so its
-# output can be inspected. cohort does not restart dead panes; kill
-# the window and cohort recreates it.
-setw -g remain-on-exit on
-
-set -g status-style "bg=colour236,fg=colour145"
-set -g status-left "[cohort] #S "
-set -g status-right " %H:%M "
-set -g window-status-current-style "bg=colour61,fg=colour15"
-`
-
-// seedTmuxConf writes the default server config if none exists.
-func seedTmuxConf(path string) error {
-	if _, err := os.Stat(path); err == nil {
-		return nil
-	} else if !errors.Is(err, fs.ErrNotExist) {
-		return err
-	}
-	return os.WriteFile(path, []byte(defaultTmuxConf), 0o644)
-}
-
 // reconcile brings the tmux server into the state declared by config.
 // It is idempotent; failures are recorded as issues and retried on the
 // next tick. Windows are matched by their @cohort tag and window id,
@@ -329,6 +294,9 @@ func (d *Daemon) reconcile() {
 		return
 	}
 	d.reconcileDesktop(canonical)
+	if wins, ok := d.list(); ok {
+		d.backfillColors(wins)
+	}
 }
 
 // list returns all winlinks, recording an issue on failure.
@@ -356,7 +324,7 @@ func (d *Daemon) reconcileManager() bool {
 				continue
 			}
 			if w.Index != desk[0].Index {
-				if err := d.tmux.MoveWindowBefore(SessionDesktop, w.Index, desk[0].Index); err != nil {
+				if err := d.tmux.MoveWindowBefore(SessionDesktop, w.ID, desk[0].Index); err != nil {
 					d.issue("manager", "move to the front of Desktop: %v", err)
 				} else if err := d.tmux.RenumberWindows(SessionDesktop); err != nil {
 					d.issue("tmux", "renumber Desktop: %v", err)
@@ -376,10 +344,10 @@ func (d *Daemon) reconcileManager() bool {
 	}
 	var err error
 	if len(desk) == 0 {
-		_, err = d.tmux.NewSession(SessionDesktop, name, name, folder, d.argv(d.cfg.Manager))
+		_, err = d.tmux.NewSession(SessionDesktop, name, folder, d.argv(d.cfg.Manager), windowOptions(name))
 	} else {
 		_, err = d.tmux.NewWindowBefore(fmt.Sprintf("%s:%d", SessionDesktop, desk[0].Index),
-			name, name, folder, d.argv(d.cfg.Manager))
+			name, folder, d.argv(d.cfg.Manager), windowOptions(name))
 	}
 	if err != nil {
 		d.issue("manager", "create window: %v", err)
@@ -417,9 +385,9 @@ func (d *Daemon) reconcileAgents() (map[string]string, bool) {
 			var id string
 			var err error
 			if len(bg) == 0 {
-				id, err = d.tmux.NewSession(SessionBackground, a.Name, a.Name, folder, d.argv(a.Command))
+				id, err = d.tmux.NewSession(SessionBackground, a.Name, folder, d.argv(a.Command), windowOptions(a.Name))
 			} else {
-				id, err = d.tmux.NewWindow(SessionBackground, a.Name, a.Name, folder, d.argv(a.Command))
+				id, err = d.tmux.NewWindow(SessionBackground, a.Name, folder, d.argv(a.Command), windowOptions(a.Name))
 			}
 			if err != nil {
 				d.issue(key, "create window: %v", err)
@@ -455,23 +423,15 @@ func (d *Daemon) reconcileAgents() (map[string]string, bool) {
 // session (with a throwaway placeholder window) when it does not exist.
 func (d *Daemon) linkIntoBackground(id string, bg *[]tmux.Window, next *int) error {
 	if len(*bg) == 0 {
-		ph, err := d.tmux.NewSession(SessionBackground, "placeholder", "", d.root, []string{"sleep", "60"})
+		ph, err := d.tmux.NewSession(SessionBackground, "placeholder", d.root, []string{"sleep", "60"}, nil)
 		if err != nil {
 			return err
 		}
 		if err := d.tmux.LinkWindow(id, SessionBackground, 1000); err != nil {
 			return err
 		}
-		wins, err := d.tmux.ListAll()
-		if err != nil {
+		if err := d.tmux.KillWindow(SessionBackground, ph); err != nil {
 			return err
-		}
-		for _, w := range inSession(wins, SessionBackground) {
-			if w.ID == ph {
-				if err := d.tmux.KillWindow(SessionBackground, w.Index); err != nil {
-					return err
-				}
-			}
 		}
 		*bg = append(*bg, tmux.Window{Session: SessionBackground, ID: id})
 		*next = 1001
@@ -518,7 +478,7 @@ func (d *Daemon) reconcileDesktop(canonical map[string]string) {
 			d.issue("orphan "+w.ID, "window %s (%q) exists only in Desktop and %s; left alone (destroy postponed)", w.ID, w.Tag, why)
 			continue
 		}
-		if err := d.tmux.UnlinkWindow(SessionDesktop, w.Index); err != nil {
+		if err := d.tmux.UnlinkWindow(SessionDesktop, w.ID); err != nil {
 			d.issue("agent "+w.Tag, "unlink from Desktop: %v", err)
 			continue
 		}
@@ -540,6 +500,29 @@ func (d *Daemon) reconcileDesktop(canonical map[string]string) {
 	if changed {
 		if err := d.tmux.RenumberWindows(SessionDesktop); err != nil {
 			d.issue("tmux", "renumber Desktop: %v", err)
+		}
+	}
+}
+
+// windowOptions are the options every cohort window carries: its tag
+// and its colour.
+func windowOptions(name string) map[string]string {
+	opts := colorOptions(name)
+	opts[tmux.TagOption] = name
+	return opts
+}
+
+// backfillColors gives cohort windows created before colours existed
+// (or by an older cohort) their colour.
+func (d *Daemon) backfillColors(wins []tmux.Window) {
+	done := map[string]bool{}
+	for _, w := range wins {
+		if w.Tag == "" || w.Color != "" || done[w.ID] {
+			continue
+		}
+		done[w.ID] = true
+		if err := d.tmux.SetWindowOptions(w.ID, colorOptions(w.Tag)); err != nil {
+			d.issue("tmux", "set colour of %s: %v", w.ID, err)
 		}
 	}
 }

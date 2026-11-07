@@ -10,6 +10,7 @@ import (
 	"bytes"
 	"fmt"
 	"os/exec"
+	"sort"
 	"strconv"
 	"strings"
 )
@@ -26,6 +27,7 @@ type Window struct {
 	ID      string // @N, unique per server
 	Name    string
 	Tag     string // value of TagOption, "" if not a cohort window
+	Color   string // value of @cohort_color, "" if unset
 }
 
 // Server is a handle to a tmux server identified by its socket name.
@@ -77,7 +79,7 @@ func (s *Server) HasSession(session string) bool {
 	return err == nil
 }
 
-const listFormat = "#{session_name}\t#{window_index}\t#{window_id}\t#{" + TagOption + "}\t#{window_name}"
+const listFormat = "#{session_name}\t#{window_index}\t#{window_id}\t#{" + TagOption + "}\t#{@cohort_color}\t#{window_name}"
 
 // ListAll returns every winlink on the server. A server that is not
 // running has no windows.
@@ -92,50 +94,70 @@ func (s *Server) ListAll() ([]Window, error) {
 	}
 	var wins []Window
 	for _, line := range strings.Split(strings.TrimSpace(out), "\n") {
-		parts := strings.SplitN(line, "\t", 5)
-		if len(parts) != 5 {
+		parts := strings.SplitN(line, "\t", 6)
+		if len(parts) != 6 {
 			continue
 		}
 		idx, err := strconv.Atoi(parts[1])
 		if err != nil {
 			continue
 		}
-		wins = append(wins, Window{Session: parts[0], Index: idx, ID: parts[2], Tag: parts[3], Name: parts[4]})
+		wins = append(wins, Window{Session: parts[0], Index: idx, ID: parts[2], Tag: parts[3], Color: parts[4], Name: parts[5]})
 	}
 	return wins, nil
 }
 
 // NewSession creates a detached session whose only window is named
-// name, tagged tag, and runs argv from dir. Returns the window id.
-func (s *Server) NewSession(session, name, tag, dir string, argv []string) (string, error) {
-	return s.create(tag, append([]string{"new-session", "-d", "-s", session}, s.windowArgs(name, dir, argv)...))
+// name, runs argv from dir and carries the window options opts.
+// Returns the window id.
+func (s *Server) NewSession(session, name, dir string, argv []string, opts map[string]string) (string, error) {
+	return s.create(opts, append([]string{"new-session", "-d", "-s", session}, windowArgs(name, dir, argv)...))
 }
 
 // NewWindow appends a window to session. Returns the window id.
-func (s *Server) NewWindow(session, name, tag, dir string, argv []string) (string, error) {
-	return s.create(tag, append([]string{"new-window", "-d", "-t", session + ":"}, s.windowArgs(name, dir, argv)...))
+func (s *Server) NewWindow(session, name, dir string, argv []string, opts map[string]string) (string, error) {
+	return s.create(opts, append([]string{"new-window", "-d", "-t", session + ":"}, windowArgs(name, dir, argv)...))
 }
 
 // NewWindowBefore inserts a window before target (session:index).
 // Returns the window id.
-func (s *Server) NewWindowBefore(target, name, tag, dir string, argv []string) (string, error) {
-	return s.create(tag, append([]string{"new-window", "-d", "-b", "-t", target}, s.windowArgs(name, dir, argv)...))
+func (s *Server) NewWindowBefore(target, name, dir string, argv []string, opts map[string]string) (string, error) {
+	return s.create(opts, append([]string{"new-window", "-d", "-b", "-t", target}, windowArgs(name, dir, argv)...))
 }
 
-func (s *Server) windowArgs(name, dir string, argv []string) []string {
+func windowArgs(name, dir string, argv []string) []string {
 	return append([]string{"-P", "-F", "#{window_id}", "-n", name, "-c", dir, "--"}, argv...)
 }
 
-func (s *Server) create(tag string, args []string) (string, error) {
+func (s *Server) create(opts map[string]string, args []string) (string, error) {
 	out, err := s.run(args...)
 	if err != nil {
 		return "", err
 	}
 	id := strings.TrimSpace(out)
-	if _, err := s.run("set-option", "-w", "-t", id, TagOption, tag); err != nil {
-		return id, err
+	return id, s.SetWindowOptions(id, opts)
+}
+
+// SetWindowOptions sets window options on the window with the given id,
+// in one tmux call.
+func (s *Server) SetWindowOptions(id string, opts map[string]string) error {
+	keys := make([]string, 0, len(opts))
+	for k := range opts {
+		keys = append(keys, k)
 	}
-	return id, nil
+	sort.Strings(keys)
+	var args []string
+	for _, k := range keys {
+		if len(args) > 0 {
+			args = append(args, ";")
+		}
+		args = append(args, "set-option", "-w", "-t", id, k, opts[k])
+	}
+	if len(args) == 0 {
+		return nil
+	}
+	_, err := s.run(args...)
+	return err
 }
 
 // LinkWindow links the window with the given id into session at
@@ -145,24 +167,27 @@ func (s *Server) LinkWindow(id, session string, index int) error {
 	return err
 }
 
-// UnlinkWindow unlinks the winlink at session:index. tmux refuses if
-// that is the window's only session, so this never destroys a window.
-func (s *Server) UnlinkWindow(session string, index int) error {
-	_, err := s.run("unlink-window", "-t", session+":"+strconv.Itoa(index))
+// The functions below address a window as session:@id, which selects
+// that window's winlink in that session. Unlike session:index it stays
+// right when tmux renumbers windows (renumber-windows on).
+
+// UnlinkWindow unlinks window id from session. tmux refuses if that is
+// the window's only session, so this never destroys a window.
+func (s *Server) UnlinkWindow(session, id string) error {
+	_, err := s.run("unlink-window", "-t", session+":"+id)
 	return err
 }
 
-// KillWindow destroys the window at session:index (in every session it
-// is linked into).
-func (s *Server) KillWindow(session string, index int) error {
-	_, err := s.run("kill-window", "-t", session+":"+strconv.Itoa(index))
+// KillWindow destroys window id (in every session it is linked into).
+func (s *Server) KillWindow(session, id string) error {
+	_, err := s.run("kill-window", "-t", session+":"+id)
 	return err
 }
 
-// MoveWindowBefore moves the winlink at session:from in front of
+// MoveWindowBefore moves window id's winlink in session in front of
 // session:to.
-func (s *Server) MoveWindowBefore(session string, from, to int) error {
-	_, err := s.run("move-window", "-b", "-s", session+":"+strconv.Itoa(from), "-t", session+":"+strconv.Itoa(to))
+func (s *Server) MoveWindowBefore(session, id string, to int) error {
+	_, err := s.run("move-window", "-b", "-s", session+":"+id, "-t", session+":"+strconv.Itoa(to))
 	return err
 }
 

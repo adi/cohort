@@ -31,7 +31,10 @@ server in line with one file. You drive it by editing that file.
   a rejected config or an agent whose folder can't be used. `"issues":
   {}` means tmux matches the config. Check it after every config edit.
 - **`~/.cohort/cohort.log`:** the daemon's log.
-- **`~/.cohort/tmux.conf`:** the server's tmux config; yours to edit.
+- **`~/.cohort/tmux.conf`** and **`~/.cohort/tab-color.sh`:** the
+  server's tmux config (agent colours, key bindings, status bar) and
+  the iTerm2 tab-colour hook script; yours to edit. Apply changes live
+  with `tmux -L cohort source-file ~/.cohort/tmux.conf`.
 
 To change agents, use the `cohort-agents` skill. To see what an
 agent is doing or send it a prompt, use the `cohort-talk` skill.

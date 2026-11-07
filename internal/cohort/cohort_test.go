@@ -25,7 +25,7 @@ func newHarness(t *testing.T) *harness {
 	socket := filepath.Join(t.TempDir(), "tmux.sock")
 	d := newDaemon(root, socket, io.Discard)
 	d.shell = []string{"/bin/sh", "-c"}
-	if err := seedTmuxConf(filepath.Join(root, "tmux.conf")); err != nil {
+	if err := seedServerFiles(root); err != nil {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { exec.Command("tmux", "-S", socket, "kill-server").Run() })
@@ -312,4 +312,39 @@ func TestSeedKeepsExistingFilesInEmptyRepo(t *testing.T) {
 	if len(h.d.issues) != 0 {
 		t.Fatalf("issues: %v", h.d.issues)
 	}
+}
+
+func TestWindowsGetColours(t *testing.T) {
+	h := newHarness(t)
+	h.config(twoAgents)
+	h.tick()
+	out := h.tmux("list-windows", "-a", "-F", "#{@cohort} #{@cohort_color}")
+	for _, name := range []string{"cohort-manager", "api", "web"} {
+		if !strings.Contains(out, name+" "+colorOptions(name)["@cohort_color"]) {
+			t.Errorf("%s has no colour:\n%s", name, out)
+		}
+	}
+	// A window from an older cohort (no colour) gets one.
+	h.tmux("set-option", "-w", "-u", "-t", "Background:web", "@cohort_color")
+	h.tick()
+	if got := strings.TrimSpace(h.tmux("display", "-p", "-t", "Background:web", "#{@cohort_color}")); got == "" {
+		t.Fatal("colour not backfilled")
+	}
+}
+
+func TestUnlinkWithRenumberWindows(t *testing.T) {
+	h := newHarness(t)
+	h.config(`{"manager":"sleep 600","agents":[
+	 {"name":"a","command":"sleep 600","linked":true},
+	 {"name":"b","command":"sleep 600","linked":true},
+	 {"name":"c","command":"sleep 600","linked":true}]}`)
+	h.tick()
+	h.expect("Desktop", "cohort-manager a b c")
+	h.tmux("set-option", "-g", "renumber-windows", "on")
+	h.config(`{"manager":"sleep 600","agents":[
+	 {"name":"a","command":"sleep 600","linked":false},
+	 {"name":"b","command":"sleep 600","linked":false},
+	 {"name":"c","command":"sleep 600","linked":true}]}`)
+	h.tick()
+	h.expect("Desktop", "cohort-manager c")
 }

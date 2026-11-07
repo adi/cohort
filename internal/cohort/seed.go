@@ -9,6 +9,39 @@ import (
 	"strings"
 )
 
+// serverDefaults holds the tmux server's starter files, written into
+// ~/.cohort once (when missing) and owned by the manager afterwards.
+// "@ROOT@" in them is replaced by the ~/.cohort path.
+//
+//go:embed defaults
+var serverDefaults embed.FS
+
+// seedServerFiles writes tmux.conf and tab-color.sh into root unless
+// they already exist.
+func seedServerFiles(root string) error {
+	for _, f := range []struct {
+		name string
+		mode os.FileMode
+	}{{"tmux.conf", 0o644}, {"tab-color.sh", 0o755}} {
+		dst := filepath.Join(root, f.name)
+		if _, err := os.Stat(dst); !errors.Is(err, fs.ErrNotExist) {
+			if err != nil {
+				return err
+			}
+			continue
+		}
+		data, err := serverDefaults.ReadFile("defaults/" + f.name)
+		if err != nil {
+			return err
+		}
+		data = []byte(strings.ReplaceAll(string(data), "@ROOT@", root))
+		if err := os.WriteFile(dst, data, f.mode); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
 // managerSeed holds the cohort manager's starter files: its CLAUDE.md
 // and skills. The manager is the one place cohort knows a harness
 // (claude code), so its instructions ship with cohort.

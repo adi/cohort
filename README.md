@@ -49,10 +49,25 @@ command itself.
 - Window commands run through the user's shell as an interactive login
   shell (`$SHELL -lic '<command>'`), so they get the same PATH and
   environment (API keys, etc.) as a terminal, even under systemd.
-- The private server uses its own tmux config, `~/.cohort/tmux.conf`
-  (seeded with a default, then owned by the manager), passed with `-f`
-  on every invocation, so `~/.tmux.conf` is never read. tmux reads `-f`
-  only at server start, and cohort starts the server.
+- The private server uses its own tmux config, `~/.cohort/tmux.conf`,
+  passed with `-f` on every invocation, so `~/.tmux.conf` is never
+  read. tmux reads `-f` only at server start, and cohort starts the
+  server. cohort writes it (and `~/.cohort/tab-color.sh`) once, from
+  `internal/cohort/defaults/`; after that both belong to the manager.
+  The defaults, tuned for agentic work:
+  - **Agent colours:** every window gets a colour derived from its
+    agent name (window options `@cohort_color` / `@cohort_rgb`; same
+    mapping as the old `team` tool). The status bar and the active pane
+    border take the current window's colour.
+  - **Current window** marked by reversed bar colours instead of `*`.
+  - **Cmd+Left / Cmd+Right** for previous / next window (iTerm2 key
+    mappings sending `\e[9001~` / `\e[9002~`).
+  - **iTerm2 tab** painted in the current window's colour and titled
+    `agent@session`, through hooks running `tab-color.sh`. Only
+    terminals that announce iTerm2 (`LC_TERMINAL`/`TERM_PROGRAM`, also
+    over ssh) are touched.
+  - Mouse, clipboard via OSC 52, passthrough, 100k history, window names
+    locked to agent names.
 
 ## Config (`~/.cohort/config.json`)
 
