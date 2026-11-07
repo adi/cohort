@@ -42,11 +42,18 @@ command itself.
   message shows this command).
 - The manager's instructions ship with cohort
   (`internal/cohort/managerseed/`: a `CLAUDE.md` describing cohort and
-  its rules, and the skills `cohort-agents` and `cohort-talk`). cohort
-  writes them into the manager's folder and commits them before the
-  manager starts, but only while that repo has no commits yet, and
-  never over an existing file. After that they belong to the manager,
-  which also keeps its team structure there, in a format it chooses.
+  its rules, the skills `cohort-agents`, `cohort-talk` and
+  `cohort-team`, and the team tooling). cohort writes them into the
+  manager's folder and commits them before the manager starts, but
+  only while that repo has no commits yet, and never over an existing
+  file. After that they belong to the manager.
+- **Teams** are manager-side only; the daemon knows nothing about
+  them. The seed has `teams.json` (each agent's purpose and team),
+  `bin/team list | show <team> | hide <team>` (flips `linked` on
+  every member in `config.json` in one write), and a Claude Code mod,
+  `mods/cohort-team`, that adds `/team ...` as a slash command
+  answered without a model turn. The default manager command loads
+  the mod with `--plugin-dir`.
 - Window commands run through the user's shell as an interactive login
   shell (`$SHELL -lic '<command>'`), so they get the same PATH and
   environment (API keys, etc.) as a terminal, even under systemd.
@@ -153,7 +160,10 @@ cohort
 `cohort` has no options. What it does depends on where it runs:
 
 - **In a terminal** it is your way in: the first time, it asks for the
-  manager command and writes `config.json`; if the daemon isn't
+  manager command (Enter takes the default, `claude --plugin-dir
+  ~/.cohort/cohort-manager/mods/cohort-team --continue || claude
+  --plugin-dir ~/.cohort/cohort-manager/mods/cohort-team`) and writes
+  `config.json`; if the daemon isn't
   running it starts the service (`systemctl --user start cohort`);
   then it attaches you to Desktop. Run from inside cohort's tmux, it
   switches to Desktop instead of nesting a client.

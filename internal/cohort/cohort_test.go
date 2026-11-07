@@ -266,10 +266,15 @@ func TestManagerSeeded(t *testing.T) {
 	h.config(`{"manager":"sleep 600","agents":[]}`)
 	h.tick()
 	folder := filepath.Join(h.d.root, "cohort-manager")
-	for _, f := range []string{"CLAUDE.md", ".claude/skills/cohort-agents/SKILL.md", ".claude/skills/cohort-talk/SKILL.md"} {
+	for _, f := range []string{"CLAUDE.md", ".claude/skills/cohort-agents/SKILL.md", ".claude/skills/cohort-talk/SKILL.md",
+		".claude/skills/cohort-team/SKILL.md", "teams.json", "bin/team",
+		"mods/cohort-team/.claude-plugin/plugin.json", "mods/cohort-team/hooks/hooks.json", "mods/cohort-team/hooks/register.ts"} {
 		if _, err := os.Stat(filepath.Join(folder, f)); err != nil {
 			t.Errorf("not seeded: %s", f)
 		}
+	}
+	if st, err := os.Stat(filepath.Join(folder, "bin/team")); err != nil || st.Mode()&0o100 == 0 {
+		t.Error("bin/team not executable")
 	}
 	if out, err := git(folder, "status", "--porcelain"); err != nil || out != "" {
 		t.Fatalf("seed not committed: %q %v", out, err)

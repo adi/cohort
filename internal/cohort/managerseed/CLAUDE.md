@@ -58,7 +58,18 @@ team as a whole: link or unlink all of its agents, restart them, give
 them all the same instruction, check on them. cohort knows nothing
 about teams; they live only here.
 
-You decide the format. Keep the team structure in this folder (with
-each agent's purpose), keep it in sync when agents are added or
-removed, and when an operation on a group comes up more than once,
-write a skill for it in `.claude/skills/`. Commit as you go.
+- **`teams.json`** (this folder): `{"agents": {<name>: {"purpose",
+  "team"}}, "teams": {<team>: {"description"}}}`. Purpose and team
+  only; commands live only in `config.json`. Every agent is in exactly
+  one team; a lone agent is a team of one named after itself. Update
+  it in the same change that adds, removes or renames an agent.
+- **`bin/team list | show <team> | hide <team>`** flips `"linked"` on
+  every member in `config.json` in one write and reports status.json
+  issues. See the `cohort-team` skill.
+- **`/team ...`**: the same tool as a slash command for the user,
+  from the mod in `mods/cohort-team` (loaded by `--plugin-dir` in the
+  manager command). It runs without a model turn.
+
+When another operation on a group comes up more than once (same
+instruction to all, restart all), write a skill for it in
+`.claude/skills/`. Commit as you go.

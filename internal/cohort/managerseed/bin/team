@@ -1,0 +1,72 @@
+#!/usr/bin/env python3
+"""Operate on a team of cohort agents.
+
+usage: team list
+       team show <team>      link every member into Desktop
+       team hide <team>      unlink every member from Desktop
+
+Teams live in ../teams.json; agents in ~/.cohort/config.json.
+Members missing from config.json are skipped and reported.
+"""
+import json, os, sys, time
+
+HERE = os.path.dirname(os.path.realpath(__file__))
+TEAMS = os.path.join(HERE, "..", "teams.json")
+CONFIG = os.path.expanduser("~/.cohort/config.json")
+STATUS = os.path.expanduser("~/.cohort/status.json")
+SETTLE = float(os.environ.get("TEAM_SETTLE", "2.5"))  # seconds for cohort to apply
+
+def load(path):
+    with open(path) as f:
+        return json.load(f)
+
+def members(teams, team):
+    if team not in teams["teams"]:
+        sys.exit(f"unknown team {team!r}; known: {', '.join(teams['teams']) or 'none'}")
+    return [a for a, v in teams["agents"].items() if v.get("team") == team]
+
+def main():
+    teams = load(TEAMS)
+    teams.setdefault("agents", {})
+    teams.setdefault("teams", {})
+    if len(sys.argv) == 2 and sys.argv[1] == "list":
+        cfg = {a["name"]: a for a in load(CONFIG).get("agents", [])}
+        if not teams["teams"]:
+            print("no teams yet (teams.json is empty)")
+        for t in teams["teams"]:
+            print(f"{t}:")
+            for m in members(teams, t):
+                state = ("shown" if cfg[m].get("linked") else "hidden") if m in cfg else "not in config"
+                print(f"  {m:12} {state}")
+        return
+    if len(sys.argv) != 3 or sys.argv[1] not in ("show", "hide"):
+        sys.exit(__doc__)
+    want = sys.argv[1] == "show"
+    names = members(teams, sys.argv[2])
+    cfg = load(CONFIG)
+    agents = cfg.get("agents", [])
+    present = {a["name"] for a in agents}
+    changed = []
+    for a in agents:
+        if a["name"] in names and a.get("linked", False) != want:
+            a["linked"] = want
+            changed.append(a["name"])
+    missing = [n for n in names if n not in present]
+    if changed:
+        tmp = CONFIG + ".tmp"
+        with open(tmp, "w") as f:
+            json.dump(cfg, f, indent=2)
+            f.write("\n")
+        os.replace(tmp, CONFIG)
+        time.sleep(SETTLE)
+    print(f"{'shown' if want else 'hidden'}: {', '.join(changed) or '(no change)'}")
+    if missing:
+        print(f"not in config, skipped: {', '.join(missing)}")
+    try:
+        issues = load(STATUS).get("issues", {})
+    except FileNotFoundError:
+        print("status: unknown (no status.json; is cohort running?)")
+        return
+    print("status: ok" if not issues else f"status issues: {json.dumps(issues)}")
+
+main()

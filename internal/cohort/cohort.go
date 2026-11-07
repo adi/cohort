@@ -137,6 +137,12 @@ func Run() error {
 	return newDaemon(root, SocketName, io.MultiWriter(os.Stderr, logFile)).loop()
 }
 
+// DefaultManagerCommand resumes the manager's last claude session or
+// starts a fresh one, with the seeded cohort-team mod (the /team slash
+// command) loaded. It runs through a login shell, so ~ expands.
+const DefaultManagerCommand = "claude --plugin-dir ~/.cohort/cohort-manager/mods/cohort-team --continue" +
+	" || claude --plugin-dir ~/.cohort/cohort-manager/mods/cohort-team"
+
 // firstStart asks for the manager command when there is no config yet
 // and cohort was started from a terminal. (Without a terminal, the
 // daemon starts anyway and waits for the file to appear.) It reports
@@ -151,12 +157,16 @@ func firstStart(cfgPath string) (bool, error) {
 	fmt.Printf("cohort first start: no %s yet.\n", cfgPath)
 	fmt.Println("The cohort manager is claude code running in ~/.cohort/cohort-manager.")
 	fmt.Println("Enter the command that starts it (it is used for every start, fresh or resumed),")
-	fmt.Println("e.g.  claude --continue || claude")
+	fmt.Println("or press Enter for the default:")
+	fmt.Println("  " + DefaultManagerCommand)
 	in := bufio.NewReader(os.Stdin)
 	for {
 		fmt.Print("manager command: ")
 		line, err := in.ReadString('\n')
 		cmd := strings.TrimSpace(line)
+		if cmd == "" && err == nil {
+			cmd = DefaultManagerCommand
+		}
 		if cmd != "" {
 			if err := config.WriteNew(cfgPath, cmd); err != nil {
 				return false, err

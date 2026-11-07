@@ -1,0 +1,1 @@
+{ "name": "cohort-team", "version": "0.1.0", "description": "/team list|show <team>|hide <team>: runs the cohort manager's bin/team directly, no model turn" }

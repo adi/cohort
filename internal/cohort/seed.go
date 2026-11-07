@@ -42,8 +42,9 @@ func seedServerFiles(root string) error {
 	return nil
 }
 
-// managerSeed holds the cohort manager's starter files: its CLAUDE.md
-// and skills. The manager is the one place cohort knows a harness
+// managerSeed holds the cohort manager's starter files: its CLAUDE.md,
+// skills, and team tooling (teams.json, bin/team, the cohort-team mod).
+// Files under bin/ are written executable. The manager is the one place cohort knows a harness
 // (claude code), so its instructions ship with cohort.
 //
 //go:embed all:managerseed
@@ -76,7 +77,11 @@ func (d *Daemon) seedManager(folder string) error {
 		if err := os.MkdirAll(filepath.Dir(dst), 0o755); err != nil {
 			return err
 		}
-		if err := os.WriteFile(dst, data, 0o644); err != nil {
+		mode := os.FileMode(0o644)
+		if strings.HasPrefix(rel, "bin/") {
+			mode = 0o755
+		}
+		if err := os.WriteFile(dst, data, mode); err != nil {
 			return err
 		}
 		written = append(written, rel)
