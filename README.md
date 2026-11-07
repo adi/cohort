@@ -39,6 +39,13 @@ command itself.
   `.git/config`, so a folder restored with `git clone` doesn't have it;
   adopt it with `git -C <folder> config cohort.managed true` (the error
   message shows this command).
+- The manager's instructions ship with cohort
+  (`internal/cohort/managerseed/`: a `CLAUDE.md` describing cohort and
+  its rules, and the skills `cohort-agents` and `cohort-talk`). cohort
+  writes them into the manager's folder and commits them before the
+  manager starts, but only while that repo has no commits yet, and
+  never over an existing file. After that they belong to the manager,
+  which also keeps its team structure there, in a format it chooses.
 - Window commands run through the user's shell as an interactive login
   shell (`$SHELL -lic '<command>'`), so they get the same PATH and
   environment (API keys, etc.) as a terminal, even under systemd.

@@ -370,6 +370,10 @@ func (d *Daemon) reconcileManager() bool {
 		d.issue("manager", "%v", err)
 		return false
 	}
+	// Before the manager starts, so it reads its instructions.
+	if err := d.seedManager(folder); err != nil {
+		d.issue("manager seed", "seed instructions in %s: %v", folder, err)
+	}
 	var err error
 	if len(desk) == 0 {
 		_, err = d.tmux.NewSession(SessionDesktop, name, name, folder, d.argv(d.cfg.Manager))

@@ -260,3 +260,56 @@ func TestCommandsRunInShell(t *testing.T) {
 		t.Fatalf("start commands: %s", out)
 	}
 }
+
+func TestManagerSeeded(t *testing.T) {
+	h := newHarness(t)
+	h.config(`{"manager":"sleep 600","agents":[]}`)
+	h.tick()
+	folder := filepath.Join(h.d.root, "cohort-manager")
+	for _, f := range []string{"CLAUDE.md", ".claude/skills/cohort-agents/SKILL.md", ".claude/skills/cohort-talk/SKILL.md"} {
+		if _, err := os.Stat(filepath.Join(folder, f)); err != nil {
+			t.Errorf("not seeded: %s", f)
+		}
+	}
+	if out, err := git(folder, "status", "--porcelain"); err != nil || out != "" {
+		t.Fatalf("seed not committed: %q %v", out, err)
+	}
+
+	// The manager owns the files after the first commit: an edit
+	// survives the manager window being recreated.
+	claude := filepath.Join(folder, "CLAUDE.md")
+	if err := os.WriteFile(claude, []byte("mine\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	h.tmux("kill-window", "-t", "Desktop:0")
+	h.tick()
+	h.expect("Desktop", "cohort-manager")
+	if data, _ := os.ReadFile(claude); string(data) != "mine\n" {
+		t.Fatalf("seed overwrote the manager's file: %q", data)
+	}
+}
+
+func TestSeedKeepsExistingFilesInEmptyRepo(t *testing.T) {
+	h := newHarness(t)
+	folder := filepath.Join(h.d.root, "cohort-manager")
+	if err := os.MkdirAll(folder, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := gitInit(folder); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(folder, "CLAUDE.md"), []byte("own\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	h.config(`{"manager":"sleep 600","agents":[]}`)
+	h.tick()
+	if data, _ := os.ReadFile(filepath.Join(folder, "CLAUDE.md")); string(data) != "own\n" {
+		t.Fatalf("existing file overwritten: %q", data)
+	}
+	if _, err := os.Stat(filepath.Join(folder, ".claude/skills/cohort-talk/SKILL.md")); err != nil {
+		t.Fatal("missing files not seeded")
+	}
+	if len(h.d.issues) != 0 {
+		t.Fatalf("issues: %v", h.d.issues)
+	}
+}
