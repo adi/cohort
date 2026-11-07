@@ -1,0 +1,18 @@
+# systemd user unit for the cohort daemon.
+#
+# Install (binary built with `go build -o ~/.cohort/bin/cohort .`):
+#   mkdir -p ~/.config/systemd/user
+#   cp contrib/cohort.service ~/.config/systemd/user/
+#   systemctl --user daemon-reload
+#   systemctl --user enable --now cohort
+#
+[Unit]
+Description=Cohort agent manager daemon
+
+[Service]
+ExecStart=%h/.cohort/bin/cohort
+Restart=on-failure
+RestartSec=2
+
+[Install]
+WantedBy=default.target
