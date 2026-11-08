@@ -32,8 +32,8 @@ func AssetName() string {
 }
 
 // Upgrade replaces the running binary with the latest GitHub release.
-// The daemon keeps running the old binary until the service restarts;
-// cohort doesn't restart it, since that restarts every agent.
+// The daemon keeps running the old binary until the service restarts,
+// which the user does (agents survive it).
 func Upgrade(current string) error {
 	tag, err := latestTag()
 	if err != nil {
@@ -50,12 +50,20 @@ func Upgrade(current string) error {
 	if exe, err = filepath.EvalSymlinks(exe); err != nil {
 		return err
 	}
-	if err := install(tag, exe); err != nil {
+	sums, err := releaseSums(tag)
+	if err != nil {
+		return err
+	}
+	if err := install(tag, exe, sums); err != nil {
 		return err
 	}
 	fmt.Printf("upgraded %s: %s -> %s\n", exe, current, tag)
-	fmt.Println("The running daemon keeps the old version until the service restarts:")
-	fmt.Println("  " + restartHint + "   # restarts every agent too")
+	if err := refreshService(tag, sums); err != nil {
+		fmt.Printf("warning: service file not updated: %v\n", err)
+	}
+	fmt.Println("The running daemon keeps the old version until the service restarts")
+	fmt.Println("(agents keep running):")
+	fmt.Println("  " + restartHint)
 	return nil
 }
 
@@ -97,43 +105,55 @@ func fetch(url string) ([]byte, error) {
 	return io.ReadAll(resp.Body)
 }
 
-// install downloads tag's binary, checks it against the release's
-// SHA256SUMS and atomically replaces dst with it.
-func install(tag, dst string) error {
-	base := downloadBase + "/" + Repo + "/releases/download/" + tag + "/"
-	bin, err := fetch(base + AssetName())
+func releaseURL(tag, name string) string {
+	return downloadBase + "/" + Repo + "/releases/download/" + tag + "/" + name
+}
+
+// releaseSums fetches tag's SHA256SUMS as file name -> hex digest.
+func releaseSums(tag string) (map[string]string, error) {
+	data, err := fetch(releaseURL(tag, "SHA256SUMS"))
 	if err != nil {
-		return err
+		return nil, err
 	}
-	sums, err := fetch(base + "SHA256SUMS")
-	if err != nil {
-		return err
-	}
-	want := ""
-	sc := bufio.NewScanner(strings.NewReader(string(sums)))
+	sums := map[string]string{}
+	sc := bufio.NewScanner(strings.NewReader(string(data)))
 	for sc.Scan() {
-		f := strings.Fields(sc.Text())
-		if len(f) == 2 && strings.TrimPrefix(f[1], "*") == AssetName() {
-			want = f[0]
+		if f := strings.Fields(sc.Text()); len(f) == 2 {
+			sums[strings.TrimPrefix(f[1], "*")] = f[0]
 		}
 	}
-	if want == "" {
-		return fmt.Errorf("%s not in the release's SHA256SUMS", AssetName())
+	return sums, nil
+}
+
+// fetchVerified downloads one release file and checks it against sums.
+func fetchVerified(tag, name string, sums map[string]string) ([]byte, error) {
+	want, ok := sums[name]
+	if !ok {
+		return nil, fmt.Errorf("%s not in the release's SHA256SUMS", name)
 	}
-	got := sha256.Sum256(bin)
+	data, err := fetch(releaseURL(tag, name))
+	if err != nil {
+		return nil, err
+	}
+	got := sha256.Sum256(data)
 	if hex.EncodeToString(got[:]) != want {
-		return fmt.Errorf("%s: checksum mismatch", AssetName())
+		return nil, fmt.Errorf("%s: checksum mismatch", name)
 	}
+	return data, nil
+}
+
+// writeAtomic replaces dst with data through a temp file in its folder.
+func writeAtomic(dst string, data []byte, mode os.FileMode) error {
 	tmp, err := os.CreateTemp(filepath.Dir(dst), ".cohort-upgrade-*")
 	if err != nil {
 		return err
 	}
 	defer os.Remove(tmp.Name())
-	if _, err := tmp.Write(bin); err != nil {
+	if _, err := tmp.Write(data); err != nil {
 		tmp.Close()
 		return err
 	}
-	if err := tmp.Chmod(0o755); err != nil {
+	if err := tmp.Chmod(mode); err != nil {
 		tmp.Close()
 		return err
 	}
@@ -141,4 +161,14 @@ func install(tag, dst string) error {
 		return err
 	}
 	return os.Rename(tmp.Name(), dst)
+}
+
+// install downloads tag's binary, checks it against the release's
+// SHA256SUMS and atomically replaces dst with it.
+func install(tag, dst string, sums map[string]string) error {
+	bin, err := fetchVerified(tag, AssetName(), sums)
+	if err != nil {
+		return err
+	}
+	return writeAtomic(dst, bin, 0o755)
 }

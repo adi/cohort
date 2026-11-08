@@ -12,15 +12,14 @@ import (
 // as ~/Library/LaunchAgents/<label>.plist (contrib/cohort.plist).
 const launchdLabel = "com.github.adi.cohort"
 
-// restartHint is how the user restarts the daemon (and every agent).
+// restartHint restarts the daemon only: launchd stops the job's
+// process group, which the tmux server left when it daemonized, so
+// every window keeps running and the new daemon adopts them.
 const restartHint = "launchctl kickstart -k gui/$(id -u)/" + launchdLabel
 
-// killServerOnExit: launchd only stops the job's process group, which
-// the tmux server leaves when it daemonizes, so the daemon stops it on
-// SIGTERM itself. Stopping or restarting the service then stops every
-// window, as with systemd. (After a crash the windows keep running and
-// the next daemon adopts them.)
-const killServerOnExit = true
+// refreshService: the launchd plist is generated from a template at
+// install time (install.sh); upgrade leaves it alone.
+func refreshService(tag string, sums map[string]string) error { return nil }
 
 // startService starts the cohort launchd agent, loading it first when
 // it isn't loaded (e.g. it was booted out, or installed but not yet

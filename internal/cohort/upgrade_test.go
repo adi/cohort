@@ -41,7 +41,11 @@ func TestUpgradeInstall(t *testing.T) {
 	if err := os.WriteFile(dst, []byte("old"), 0o755); err != nil {
 		t.Fatal(err)
 	}
-	if err := install(tag, dst); err != nil {
+	sums, err := releaseSums(tag)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := install(tag, dst, sums); err != nil {
 		t.Fatal(err)
 	}
 	got, _ := os.ReadFile(dst)
@@ -61,7 +65,11 @@ func TestUpgradeRejectsBadChecksum(t *testing.T) {
 	if err := os.WriteFile(dst, []byte("old"), 0o755); err != nil {
 		t.Fatal(err)
 	}
-	if err := install("v9.9.9", dst); err == nil {
+	sums, err := releaseSums("v9.9.9")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := install("v9.9.9", dst, sums); err == nil {
 		t.Fatal("bad checksum accepted")
 	}
 	if got, _ := os.ReadFile(dst); string(got) != "old" {

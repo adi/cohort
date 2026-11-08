@@ -203,10 +203,10 @@ func (d *Daemon) loop() error {
 		d.tick()
 		select {
 		case <-sig:
-			d.log.Printf("shutting down")
-			if killServerOnExit {
-				d.tmux.KillServer()
-			}
+			// The tmux server and every window outlive the daemon; a
+			// new daemon adopts them. Stopping them is the service
+			// manager's job (contrib/cohort.service ExecStopPost).
+			d.log.Printf("shutting down; windows keep running")
 			return nil
 		case <-ticker.C:
 		}

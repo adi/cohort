@@ -123,7 +123,8 @@ command itself.
 | Show it in Desktop | `"linked": true` |
 | Hide it from Desktop | `"linked": false` |
 | Restart one agent (or the manager) | `prefix R` in its window, or `tmux -L cohort kill-window -t <window>`; cohort recreates it within a second |
-| Restart all agents | `systemctl --user restart cohort`, on macOS `launchctl kickstart -k gui/$(id -u)/com.github.adi.cohort` (stops the whole tmux server) |
+| Restart the daemon only (e.g. after `cohort upgrade`) | `systemctl --user restart cohort`, on macOS `launchctl kickstart -k gui/$(id -u)/com.github.adi.cohort`. Agents keep running; the new daemon adopts their windows. A daemon crash is the same |
+| Restart all agents | stop, then start: `systemctl --user stop cohort && systemctl --user start cohort` (the stop ends the tmux server). On macOS: `launchctl bootout gui/$(id -u)/com.github.adi.cohort; tmux -L cohort kill-server`, then `cohort` |
 | Delete an agent | remove the entry. **Destroying windows is postponed**: the window is unlinked from Desktop and left running in Background, reported as an orphan; the folder is never touched |
 
 Windows are `remain-on-exit on`: when an agent's command exits, its
@@ -170,11 +171,12 @@ Upgrade to the latest release:
 cohort upgrade
 ```
 
-It replaces the binary only. The running daemon keeps the old version
-until the service restarts (`systemctl --user restart cohort`, or
-`launchctl kickstart -k gui/$(id -u)/com.github.adi.cohort` on
-macOS), which also restarts every agent, so that step is yours to
-choose.
+It replaces the binary (and, on Linux, the systemd unit when the
+release's differs, followed by `daemon-reload`). The running daemon
+keeps the old version until the service restarts:
+`systemctl --user restart cohort`, or
+`launchctl kickstart -k gui/$(id -u)/com.github.adi.cohort` on macOS.
+A restart replaces only the daemon; agents keep running.
 
 From source: `go build -o ~/.cohort/bin/cohort .`, then the steps in
 `contrib/cohort.service` (Linux) or `contrib/cohort.plist` (macOS).

@@ -44,11 +44,12 @@ agent is doing or send it a prompt, use the `cohort-talk` skill.
 
 - Change agents and linking only through `config.json`. Links made
   directly in tmux are undone within a second.
-- Never kill or restart your own window (`Desktop:0`), and never
-  restart the service (`systemctl --user restart cohort`, or
-  `launchctl kickstart -k gui/$(id -u)/com.github.adi.cohort` on
-  macOS) unless the user asks: both end your session (the restart
-  stops every agent too).
+- Never kill or restart your own window (`Desktop:0`) and never stop
+  the service (`systemctl --user stop cohort`, on macOS `launchctl
+  bootout`) unless the user asks: both end your session, and a stop
+  ends every agent too. Restarting the service (`systemctl --user
+  restart cohort`, `launchctl kickstart -k gui/$(id -u)/com.github.adi.cohort`)
+  replaces only the daemon; agents, you included, keep running.
 - Never create an agent's folder yourself. cohort creates
   `~/.cohort/<name>` and refuses a folder that already exists.
 - A dead agent pane (the command exited) stays visible on purpose.

@@ -68,7 +68,7 @@ if [ "$os" = linux ]; then
     loginctl enable-linger "$(id -un)" 2>/dev/null ||
       echo "cohort install: warning: could not enable linger; cohort will start at login instead of boot" >&2
     if systemctl --user is-active -q cohort; then
-      echo "The running daemon keeps the old version until: systemctl --user restart cohort (restarts every agent)"
+      echo "The running daemon keeps the old version until: systemctl --user restart cohort (agents keep running)"
     fi
   fi
 else
@@ -77,7 +77,7 @@ else
   sed -e "s|@HOME@|$HOME|g" -e "s|@SHELL@|${SHELL:-/bin/zsh}|g" -e "s|@LANG@|${LANG:-en_US.UTF-8}|g" \
     "$tmp/cohort.plist" >"$HOME/Library/LaunchAgents/$LABEL.plist"
   if launchctl print "gui/$(id -u)/$LABEL" >/dev/null 2>&1; then
-    echo "The running daemon keeps the old version until: launchctl kickstart -k gui/\$(id -u)/$LABEL"
+    echo "The running daemon keeps the old version until: launchctl kickstart -k gui/\$(id -u)/$LABEL (agents keep running)"
   fi
 fi
 

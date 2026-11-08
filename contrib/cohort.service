@@ -13,11 +13,18 @@
 #
 # Without a terminal (as here) cohort runs as the daemon.
 #
-# The tmux server is started by the daemon, so it belongs to this unit:
-# `systemctl --user restart cohort` stops every window and starts them
-# all again with their configured commands. That is the intended way to
-# restart all agents (e.g. after upgrading harnesses). A daemon crash
-# does the same.
+# The tmux server is started by the daemon, so it lives in this unit's
+# cgroup. KillMode=process makes systemd signal only the daemon, and
+# ExecStopPost stops the tmux server only for a real stop job:
+#   systemctl --user restart cohort   daemon only (e.g. after `cohort
+#                                     upgrade`); every agent keeps running
+#                                     and the new daemon adopts them
+#   a daemon crash (Restart=)         same: agents keep running
+#   systemctl --user stop cohort      stops the tmux server: every agent
+#   ... then start                    starts all agents fresh with their
+#                                     configured commands
+# (During a restart, systemd's job for this unit is "restart", during a
+# stop it is "stop"; ExecStopPost asks which.)
 #
 # Window commands run through `$SHELL -lic`, so they get the same PATH
 # and environment as an interactive terminal, not systemd's.
@@ -29,6 +36,8 @@ Description=Cohort agent manager daemon
 ExecStart=%h/.cohort/bin/cohort
 Restart=on-failure
 RestartSec=2
+KillMode=process
+ExecStopPost=/bin/sh -c 'systemctl --user list-jobs --no-legend %n | grep -qw stop && tmux -L cohort kill-server; exit 0'
 
 [Install]
 WantedBy=default.target

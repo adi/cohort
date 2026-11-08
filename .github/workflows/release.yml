@@ -42,7 +42,7 @@ jobs:
             done
           done
           cp install.sh contrib/cohort.service contrib/cohort.plist dist/
-          (cd dist && sha256sum cohort-*-* > SHA256SUMS)
+          (cd dist && sha256sum * > ../SHA256SUMS && mv ../SHA256SUMS .)
       - name: publish
         if: startsWith(github.ref, 'refs/tags/v')
         env:
