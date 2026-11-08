@@ -51,8 +51,9 @@ agent is doing or send it a prompt, use the `cohort-talk` skill.
   stops every agent too).
 - Never create an agent's folder yourself. cohort creates
   `~/.cohort/<name>` and refuses a folder that already exists.
-- A dead pane (the command exited) stays visible on purpose. Read it
-  before restarting the window.
+- A dead agent pane (the command exited) stays visible on purpose.
+  Read it before restarting the window. Your own window is different:
+  if you exit, cohort restarts you right away with the manager command.
 
 ## Teams
 

@@ -28,6 +28,7 @@ type Window struct {
 	Name    string
 	Tag     string // value of TagOption, "" if not a cohort window
 	Color   string // value of @cohort_color, "" if unset
+	Dead    bool   // the active pane's command has exited (remain-on-exit)
 }
 
 // Server is a handle to a tmux server identified by its socket name.
@@ -79,7 +80,7 @@ func (s *Server) HasSession(session string) bool {
 	return err == nil
 }
 
-const listFormat = "#{session_name}\t#{window_index}\t#{window_id}\t#{" + TagOption + "}\t#{@cohort_color}\t#{window_name}"
+const listFormat = "#{session_name}\t#{window_index}\t#{window_id}\t#{" + TagOption + "}\t#{@cohort_color}\t#{pane_dead}\t#{window_name}"
 
 // ListAll returns every winlink on the server. A server that is not
 // running has no windows.
@@ -94,15 +95,15 @@ func (s *Server) ListAll() ([]Window, error) {
 	}
 	var wins []Window
 	for _, line := range strings.Split(strings.TrimSpace(out), "\n") {
-		parts := strings.SplitN(line, "\t", 6)
-		if len(parts) != 6 {
+		parts := strings.SplitN(line, "\t", 7)
+		if len(parts) != 7 {
 			continue
 		}
 		idx, err := strconv.Atoi(parts[1])
 		if err != nil {
 			continue
 		}
-		wins = append(wins, Window{Session: parts[0], Index: idx, ID: parts[2], Tag: parts[3], Color: parts[4], Name: parts[5]})
+		wins = append(wins, Window{Session: parts[0], Index: idx, ID: parts[2], Tag: parts[3], Color: parts[4], Dead: parts[5] == "1", Name: parts[6]})
 	}
 	return wins, nil
 }
@@ -123,6 +124,13 @@ func (s *Server) NewWindow(session, name, dir string, argv []string, opts map[st
 // Returns the window id.
 func (s *Server) NewWindowBefore(target, name, dir string, argv []string, opts map[string]string) (string, error) {
 	return s.create(opts, append([]string{"new-window", "-d", "-b", "-t", target}, windowArgs(name, dir, argv)...))
+}
+
+// RespawnWindow restarts the dead command of window id (@N) with argv,
+// run from dir. The window keeps its id, links and options.
+func (s *Server) RespawnWindow(id, dir string, argv []string) error {
+	_, err := s.run(append([]string{"respawn-window", "-t", id, "-c", dir, "--"}, argv...)...)
+	return err
 }
 
 func windowArgs(name, dir string, argv []string) []string {
