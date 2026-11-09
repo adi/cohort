@@ -16,7 +16,8 @@ it the way a person at the keyboard would.
 tmux -L cohort capture-pane -p -t Background:<name>
 # plus the last 300 lines of scrollback
 tmux -L cohort capture-pane -p -J -S -300 -t Background:<name>
-# state of every agent: dead=1 means its command exited (status = exit code)
+# state of every agent: dead=1 means its command exited (status = exit code);
+# cohort restarts it, so dead=1 that lasts means it keeps failing (see status.json)
 tmux -L cohort list-windows -t Background -F '#{window_name} dead=#{pane_dead} status=#{pane_dead_status} cmd=#{pane_current_command}'
 ```
 

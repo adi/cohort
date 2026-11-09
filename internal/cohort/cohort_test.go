@@ -8,6 +8,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"cohort/internal/config"
 )
 
 // harness runs the real reconcile logic against a throwaway tmux
@@ -362,8 +364,8 @@ func TestUnlinkWithRenumberWindows(t *testing.T) {
 	h.expect("Desktop", "cohort-manager c")
 }
 
-// managerRuns counts how many times the manager command has started.
-func (h *harness) managerRuns() int {
+// runCount counts the lines a test command appended to <root>/runs: one per start.
+func (h *harness) runCount() int {
 	data, _ := os.ReadFile(filepath.Join(h.d.root, "runs"))
 	return strings.Count(string(data), "\n")
 }
@@ -389,42 +391,85 @@ func TestManagerRestartedWhenItExits(t *testing.T) {
 
 	// Pretend the first run lasted long enough: restarted right away,
 	// in the same window (same id, still first in Desktop).
-	h.d.mgr.started = time.Now().Add(-time.Hour)
+	h.d.run(config.ManagerName).started = time.Now().Add(-time.Hour)
 	h.tick()
 	h.waitManagerDead()
-	if n := h.managerRuns(); n != 2 {
+	if n := h.runCount(); n != 2 {
 		t.Fatalf("manager ran %d times, want 2", n)
 	}
 	if got := strings.TrimSpace(h.tmux("display-message", "-p", "-t", "Desktop:0", "#{window_id}")); got != id {
 		t.Fatalf("manager window replaced: %s -> %s", id, got)
 	}
-	if _, ok := h.d.issues["manager"]; ok {
+	if _, ok := h.d.issues["manager restarts"]; ok {
 		t.Fatalf("issue after one restart: %v", h.d.issues)
 	}
 
 	// It died right after the restart: wait out the backoff, report it.
 	h.tick()
-	if n := h.managerRuns(); n != 2 {
+	if n := h.runCount(); n != 2 {
 		t.Fatalf("restarted without backoff: %d runs", n)
 	}
-	if !strings.Contains(h.d.issues["manager"], "keeps exiting") {
+	if !strings.Contains(h.d.issues["manager restarts"], "keeps exiting") {
 		t.Fatalf("issues: %v", h.d.issues)
 	}
-	h.d.mgr.deadSince = time.Now().Add(-managerBackoffMin)
+	h.d.run(config.ManagerName).deadSince = time.Now().Add(-restartBackoffMin)
 	h.tick()
 	h.waitManagerDead()
-	if n := h.managerRuns(); n != 3 {
+	if n := h.runCount(); n != 3 {
 		t.Fatalf("not restarted after backoff: %d runs", n)
 	}
 
-	// Agents' dead panes are left alone.
-	if got := h.tmux("list-panes", "-a", "-F", "#{window_name} #{pane_dead}"); !strings.Contains(got, "a 1") {
-		t.Fatalf("agent pane: %q", got)
+}
+
+func TestAgentRestartedWhenItExits(t *testing.T) {
+	h := newHarness(t)
+	runs := filepath.Join(h.d.root, "runs")
+	h.config(`{"manager":"sleep 600","agents":[{"name":"a","command":"echo run >> ` + runs + `; exit 0","linked":true},
+		{"name":"b","command":"sleep 600"}]}`)
+	h.tick()
+	dead := func() {
+		t.Helper()
+		for i := 0; i < 50; i++ {
+			if strings.TrimSpace(h.tmux("display-message", "-p", "-t", "Background:a", "#{pane_dead}")) == "1" {
+				return
+			}
+			time.Sleep(100 * time.Millisecond)
+		}
+		t.Fatal("agent a never exited")
+	}
+	dead()
+	id := strings.TrimSpace(h.tmux("display-message", "-p", "-t", "Background:a", "#{window_id}"))
+	h.d.run("a").started = time.Now().Add(-time.Hour) // its run lasted
+	h.tick()
+	dead()
+	if n := h.runCount(); n != 2 {
+		t.Fatalf("agent ran %d times, want 2", n)
+	}
+	// Restarted in place: same window, still in Background and Desktop.
+	if got := strings.TrimSpace(h.tmux("display-message", "-p", "-t", "Background:a", "#{window_id}")); got != id {
+		t.Fatalf("window replaced: %s -> %s", id, got)
+	}
+	if got := h.tags("Desktop"); got != "cohort-manager a" {
+		t.Fatalf("Desktop: %q", got)
+	}
+	// A quick exit waits out the backoff and is reported per agent.
+	h.tick()
+	if n := h.runCount(); n != 2 || !strings.Contains(h.d.issues["agent a restarts"], "keeps exiting") {
+		t.Fatalf("runs %d, issues %v", n, h.d.issues)
+	}
+	if len(h.d.issues) != 1 {
+		t.Fatalf("other agents affected: %v", h.d.issues)
+	}
+	// Removing the agent forgets its restart state.
+	h.config(`{"manager":"sleep 600","agents":[{"name":"b","command":"sleep 600"}]}`)
+	h.tick()
+	if _, ok := h.d.runs["a"]; ok {
+		t.Fatal("restart state kept for a removed agent")
 	}
 }
 
 func TestManagerBackoff(t *testing.T) {
-	var m managerRun
+	var m windowRun
 	now := time.Now()
 	m.started = now
 	// Quick deaths double the delay up to the cap.
@@ -436,7 +481,7 @@ func TestManagerBackoff(t *testing.T) {
 		}
 	}
 	// A run that lasts clears it.
-	m.alive(now.Add(managerQuickExit))
+	m.alive(now.Add(restartQuickExit))
 	if m.backoff != 0 {
 		t.Fatalf("backoff not cleared: %s", m.backoff)
 	}
@@ -447,7 +492,7 @@ func TestManagerBackoff(t *testing.T) {
 	if m.backoff != 0 {
 		t.Fatalf("long run: backoff %s", m.backoff)
 	}
-	m = managerRun{backoff: time.Minute}
+	m = windowRun{backoff: time.Minute}
 	m.died(now)
 	if m.backoff != 0 {
 		t.Fatalf("unknown start: backoff %s", m.backoff)

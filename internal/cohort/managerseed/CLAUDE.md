@@ -52,9 +52,10 @@ agent is doing or send it a prompt, use the `cohort-talk` skill.
   replaces only the daemon; agents, you included, keep running.
 - Never create an agent's folder yourself. cohort creates
   `~/.cohort/<name>` and refuses a folder that already exists.
-- A dead agent pane (the command exited) stays visible on purpose.
-  Read it before restarting the window. Your own window is different:
-  if you exit, cohort restarts you right away with the manager command.
+- When a command exits (an agent's or yours), cohort restarts it in
+  the same window. One that keeps exiting within 10s is retried with a
+  growing delay, shown in status.json as `"agent <name> restarts"`;
+  its dead pane shows why. Fix the command in config.json.
 
 ## Teams
 

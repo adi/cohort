@@ -63,7 +63,7 @@ type Daemon struct {
 	cfgRaw []byte         // bytes of the last config file read
 	cfgErr string         // why cfgRaw was rejected, "" if valid
 
-	mgr managerRun // restart bookkeeping for the manager window
+	runs map[string]*windowRun // restart bookkeeping per window, by name (manager and agents)
 
 	issues     map[string]string // problems found in the current tick
 	lastIssues map[string]string // problems reported after the last tick
@@ -78,6 +78,7 @@ func newDaemon(root, socket string, logw io.Writer) *Daemon {
 		log:        log.New(logw, "cohort: ", log.LstdFlags),
 		shell:      loginShell(),
 		lastIssues: map[string]string{},
+		runs:       map[string]*windowRun{},
 	}
 }
 
@@ -347,15 +348,7 @@ func (d *Daemon) reconcileManager() bool {
 			if w.Tag != name {
 				continue
 			}
-			if w.Dead {
-				d.restartManager(w.ID)
-			} else {
-				d.mgr.alive(time.Now())
-			}
-			if d.mgr.backoff > 0 {
-				d.issue("manager", "the manager command keeps exiting within %s; restarting it with up to %s between tries",
-					managerQuickExit, managerBackoffMax)
-			}
+			d.keepAlive(name, "manager", w, d.cfg.Manager)
 			if w.Index != desk[0].Index {
 				if err := d.tmux.MoveWindowBefore(SessionDesktop, w.ID, desk[0].Index); err != nil {
 					d.issue("manager", "move to the front of Desktop: %v", err)
@@ -386,61 +379,78 @@ func (d *Daemon) reconcileManager() bool {
 		d.issue("manager", "create window: %v", err)
 		return false
 	}
-	d.mgr.started = time.Now()
+	d.run(name).started = time.Now()
 	return true
 }
 
-// The manager is restarted when its command exits (agents' dead panes
-// stay visible instead). A command that keeps exiting soon after start
-// is retried with a growing delay rather than every tick.
+// Every window (manager and agents) is restarted in place when its
+// command exits. A command that keeps exiting soon after start is
+// retried with a growing delay rather than every tick.
 var (
-	managerQuickExit  = 10 * time.Second // a run shorter than this counts as a failure
-	managerBackoffMin = 2 * time.Second
-	managerBackoffMax = time.Minute
+	restartQuickExit  = 10 * time.Second // a run shorter than this counts as a failure
+	restartBackoffMin = 2 * time.Second
+	restartBackoffMax = time.Minute
 )
 
-type managerRun struct {
+type windowRun struct {
 	started   time.Time     // last (re)start by this process; zero if unknown
 	deadSince time.Time     // when the current death was first seen
 	backoff   time.Duration // wait before the next restart; 0 = right away
 }
 
-// alive notes a running manager; a run that outlasts managerQuickExit
+// alive notes a running command; a run that outlasts restartQuickExit
 // clears the failure backoff.
-func (m *managerRun) alive(now time.Time) {
-	m.deadSince = time.Time{}
-	if m.backoff > 0 && now.Sub(m.started) >= managerQuickExit {
-		m.backoff = 0
+func (r *windowRun) alive(now time.Time) {
+	r.deadSince = time.Time{}
+	if r.backoff > 0 && now.Sub(r.started) >= restartQuickExit {
+		r.backoff = 0
 	}
 }
 
 // died notes a death first seen at now and sets the delay before the
 // restart: none after a run that lasted, doubling after quick exits.
-func (m *managerRun) died(now time.Time) {
-	m.deadSince = now
-	if !m.started.IsZero() && now.Sub(m.started) < managerQuickExit {
-		m.backoff = min(max(2*m.backoff, managerBackoffMin), managerBackoffMax)
+func (r *windowRun) died(now time.Time) {
+	r.deadSince = now
+	if !r.started.IsZero() && now.Sub(r.started) < restartQuickExit {
+		r.backoff = min(max(2*r.backoff, restartBackoffMin), restartBackoffMax)
 	} else {
-		m.backoff = 0
+		r.backoff = 0
 	}
 }
 
-func (d *Daemon) restartManager(id string) {
+func (d *Daemon) run(name string) *windowRun {
+	r := d.runs[name]
+	if r == nil {
+		r = &windowRun{}
+		d.runs[name] = r
+	}
+	return r
+}
+
+// keepAlive restarts window w (named name, issues under key) with
+// command when its command has exited, honouring the backoff.
+func (d *Daemon) keepAlive(name, key string, w tmux.Window, command string) {
 	now := time.Now()
-	m := &d.mgr
-	if m.deadSince.IsZero() {
-		m.died(now)
+	r := d.run(name)
+	if !w.Dead {
+		r.alive(now)
+	} else {
+		if r.deadSince.IsZero() {
+			r.died(now)
+		}
+		if now.Sub(r.deadSince) >= r.backoff {
+			if err := d.tmux.RespawnWindow(w.ID, config.Folder(d.root, name), d.argv(command)); err != nil {
+				d.issue(key, "restart window: %v", err)
+				return
+			}
+			d.log.Printf("%s exited; restarted it", key)
+			r.started, r.deadSince = now, time.Time{}
+		}
 	}
-	if now.Sub(m.deadSince) < m.backoff {
-		return
+	if r.backoff > 0 {
+		d.issue(key+" restarts", "the command keeps exiting within %s; restarting it with up to %s between tries",
+			restartQuickExit, restartBackoffMax)
 	}
-	folder := config.Folder(d.root, config.ManagerName)
-	if err := d.tmux.RespawnWindow(id, folder, d.argv(d.cfg.Manager)); err != nil {
-		d.issue("manager", "restart window: %v", err)
-		return
-	}
-	d.log.Printf("manager exited; restarted it")
-	m.started, m.deadSince = now, time.Time{}
 }
 
 // reconcileAgents makes sure every configured agent has exactly one
@@ -483,10 +493,17 @@ func (d *Daemon) reconcileAgents() (map[string]string, bool) {
 			bg = append(bg, tmux.Window{Session: SessionBackground, ID: id})
 			bgNext++
 			canonical[a.Name] = id
+			d.run(a.Name).started = time.Now()
 			continue
 		}
 		id := ids[0]
 		canonical[a.Name] = id
+		for _, w := range wins {
+			if w.ID == id {
+				d.keepAlive(a.Name, key, w, a.Command)
+				break
+			}
+		}
 		if hasID(bg, id) {
 			continue
 		}
@@ -495,6 +512,11 @@ func (d *Daemon) reconcileAgents() (map[string]string, bool) {
 		// second copy of the command.
 		if err := d.linkIntoBackground(id, &bg, &bgNext); err != nil {
 			d.issue(key, "re-link window %s into Background: %v", id, err)
+		}
+	}
+	for name := range d.runs {
+		if name != config.ManagerName && d.cfg.Agent(name) == nil {
+			delete(d.runs, name)
 		}
 	}
 	// Report cohort windows in Background that no agent claims.

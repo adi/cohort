@@ -127,14 +127,14 @@ command itself.
 | Restart all agents | stop, then start: `systemctl --user stop cohort && systemctl --user start cohort` (the stop ends the tmux server). On macOS: `launchctl bootout gui/$(id -u)/com.github.adi.cohort; tmux -L cohort kill-server`, then `cohort` |
 | Delete an agent | remove the entry. **Destroying windows is postponed**: the window is unlinked from Desktop and left running in Background, reported as an orphan; the folder is never touched |
 
-Windows are `remain-on-exit on`: when an agent's command exits, its
-window stays as a dead pane for inspection. cohort doesn't restart it;
-kill the window (or `prefix R`) and cohort recreates it.
-
-The manager is the exception: when its command exits, cohort restarts
-it in the same window right away. A manager command that keeps exiting
-within 10 seconds is retried with a growing delay (2s, doubling, up to
-a minute) and reported in `status.json`.
+When a window's command exits (the manager's or any agent's), cohort
+restarts it in the same window right away, with the command from the
+current config. A command that keeps exiting within 10 seconds is
+retried with a growing delay (2s, doubling, up to a minute) and
+reported in `status.json` (`"<agent> restarts"`); meanwhile the window
+is `remain-on-exit on`, so the dead pane shows its last output. To
+restart a running agent, `prefix R` (or kill the window) and cohort
+recreates it.
 
 ## Status and logs
 
