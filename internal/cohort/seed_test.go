@@ -189,3 +189,35 @@ func TestTeamTool(t *testing.T) {
 		t.Fatalf("unknown team: %q %v", out, err)
 	}
 }
+
+// The window list marks a window "●" while its harness's pane title
+// shows a spinner, and not when it shows "✳" (idle) or plain text.
+func TestBusyMarker(t *testing.T) {
+	if _, err := exec.LookPath("tmux"); err != nil {
+		t.Skip("tmux not installed")
+	}
+	root := t.TempDir()
+	if err := seedServerFiles(root); err != nil {
+		t.Fatal(err)
+	}
+	sock := filepath.Join(root, "sock")
+	tm := func(args ...string) string {
+		out, _ := exec.Command("tmux", append([]string{"-S", sock, "-f", filepath.Join(root, "tmux.conf")}, args...)...).CombinedOutput()
+		return strings.TrimSpace(string(out))
+	}
+	defer tm("kill-server")
+	tm("new-session", "-d", "-s", "x", "sleep", "60")
+	for title, busy := range map[string]bool{
+		"⠋ Load session | api": true,
+		"⠧ api":                true,
+		"✳ api":                false,
+		"myhost":               false,
+		"":                     false,
+	} {
+		tm("select-pane", "-t", "x", "-T", title)
+		got := tm("display", "-p", "-t", "x", "#{E:window-status-format}")
+		if strings.Contains(got, "●") != busy {
+			t.Errorf("title %q: window label %q, busy=%v", title, got, busy)
+		}
+	}
+}
