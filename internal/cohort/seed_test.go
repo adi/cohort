@@ -191,7 +191,7 @@ func TestTeamTool(t *testing.T) {
 	}
 }
 
-// The window list shows "●" while working, "!" while waiting for
+// The window list shows " ●" while working, a turning star while waiting for
 // input, nothing when idle, and never tmux's own bell "!".
 func TestStateMarker(t *testing.T) {
 	if _, err := exec.LookPath("tmux"); err != nil {
@@ -216,13 +216,24 @@ func TestStateMarker(t *testing.T) {
 	if got := tm("display", "-p", "-t", "x:b", "#{E:window-status-format}"); strings.Contains(got, "!") {
 		t.Errorf("bell shown: %q", got)
 	}
-	for v, want := range map[string]string{"working": "a●", "input": "a!", "idle": "a ", "": "a "} {
+	for v, want := range map[string]string{"working": "0 a ● ", "input": "", "idle": "0 a ", "": "0 a "} {
 		if v == "" {
 			tm("set", "-uw", "-t", "x:a", "@cohort_state")
 		} else {
 			tm("set", "-w", "-t", "x:a", "@cohort_state", v)
 		}
-		if got := tm("display", "-p", "-t", "x:a", "#{E:window-status-format}"); !strings.Contains(got+" ", want) {
+		got := tm("display", "-p", "-t", "x:a", "#{E:window-status-format}") + " "
+		if v == "input" { // one animation frame
+			ok := false
+			for _, f := range []string{"✶", "✷", "✸", "✹"} {
+				ok = ok || strings.Contains(got, "a "+f+" ")
+			}
+			if !ok {
+				t.Errorf("@cohort_state=input: label %q, want a star frame", got)
+			}
+			continue
+		}
+		if got != want {
 			t.Errorf("@cohort_state=%q: label %q, want %q in it", v, got, want)
 		}
 	}
