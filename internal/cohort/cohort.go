@@ -65,6 +65,8 @@ type Daemon struct {
 
 	runs map[string]*windowRun // restart bookkeeping per window, by name (manager and agents)
 
+	activity map[string]int64 // window id -> its activity when markWorking last read it
+
 	issues     map[string]string // problems found in the current tick
 	lastIssues map[string]string // problems reported after the last tick
 	wroteOnce  bool              // status.json written by this process
@@ -79,6 +81,7 @@ func newDaemon(root, socket string, logw io.Writer) *Daemon {
 		shell:      loginShell(),
 		lastIssues: map[string]string{},
 		runs:       map[string]*windowRun{},
+		activity:   map[string]int64{},
 	}
 }
 
@@ -321,6 +324,7 @@ func (d *Daemon) reconcile() {
 	d.reconcileDesktop(canonical)
 	if wins, ok := d.list(); ok {
 		d.backfillColors(wins)
+		d.markWorking(wins)
 	}
 }
 

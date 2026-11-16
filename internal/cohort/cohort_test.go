@@ -498,3 +498,47 @@ func TestManagerBackoff(t *testing.T) {
 		t.Fatalf("unknown start: backoff %s", m.backoff)
 	}
 }
+
+func TestScreenWorking(t *testing.T) {
+	for screen, want := range map[string]bool{
+		"> \n─────\n  ⏵⏵ bypass permissions on · esc to interrupt\n\n\n":   true,
+		"• Working (12s • Esc to interrupt)\n› \n  gpt · ~/x\n":            true,
+		"> \n─────\n  ⏵⏵ bypass permissions on (shift+tab to cycle)\n":     false,
+		"esc to interrupt\n" + strings.Repeat("old output\n", 12) + "> \n": false,
+		"": false,
+	} {
+		if got := screenWorking(screen); got != want {
+			t.Errorf("screenWorking(%q) = %v, want %v", screen, got, want)
+		}
+	}
+}
+
+// An agent is marked working while its screen shows "esc to
+// interrupt", and unmarked once it stops showing it.
+func TestAgentMarkedWorking(t *testing.T) {
+	h := newHarness(t)
+	flag := filepath.Join(h.d.root, "flag")
+	h.config(`{"manager":"sleep 600","agents":[{"name":"a","command":"echo 'esc to interrupt'; while [ ! -e ` + flag + ` ]; do sleep 0.1; done; clear; echo idle; sleep 600"}]}`)
+	working := func() string {
+		return strings.TrimSpace(h.tmux("display-message", "-p", "-t", "Background:a", "#{@cohort_working}"))
+	}
+	wait := func(want string) {
+		t.Helper()
+		for i := 0; i < 50; i++ {
+			h.tick()
+			if working() == want {
+				return
+			}
+			time.Sleep(100 * time.Millisecond)
+		}
+		t.Fatalf("@cohort_working = %q, want %q", working(), want)
+	}
+	wait("1")
+	if err := os.WriteFile(flag, nil, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	wait("0")
+	if got := strings.TrimSpace(h.tmux("display-message", "-p", "-t", "Desktop:0", "#{@cohort_working}")); got != "0" {
+		t.Errorf("manager @cohort_working = %q, want 0", got)
+	}
+}
