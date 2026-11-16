@@ -9,6 +9,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 )
 
 func TestServerFilesSeededOnce(t *testing.T) {
@@ -190,8 +191,9 @@ func TestTeamTool(t *testing.T) {
 	}
 }
 
-// The window list shows "●" exactly when @cohort_working is 1.
-func TestWorkingMarker(t *testing.T) {
+// The window list shows "●" while working, "!" while waiting for
+// input, nothing when idle, and never tmux's own bell "!".
+func TestStateMarker(t *testing.T) {
 	if _, err := exec.LookPath("tmux"); err != nil {
 		t.Skip("tmux not installed")
 	}
@@ -205,16 +207,23 @@ func TestWorkingMarker(t *testing.T) {
 		return strings.TrimSpace(string(out))
 	}
 	defer tm("kill-server")
-	tm("new-session", "-d", "-s", "x", "sleep", "60")
-	for _, v := range []string{"1", "0", ""} {
+	tm("new-session", "-d", "-s", "x", "-n", "a", "sleep", "60")
+	tm("new-window", "-d", "-t", "x", "-n", "b", "sh", "-c", "printf '\\a'; sleep 60")
+	time.Sleep(300 * time.Millisecond)
+	if f := tm("display", "-p", "-t", "x:b", "#{window_flags}"); !strings.Contains(f, "!") {
+		t.Fatalf("test setup: no bell flag on x:b (%q)", f)
+	}
+	if got := tm("display", "-p", "-t", "x:b", "#{E:window-status-format}"); strings.Contains(got, "!") {
+		t.Errorf("bell shown: %q", got)
+	}
+	for v, want := range map[string]string{"working": "a●", "input": "a!", "idle": "a ", "": "a "} {
 		if v == "" {
-			tm("set", "-uw", "-t", "x", "@cohort_working")
+			tm("set", "-uw", "-t", "x:a", "@cohort_state")
 		} else {
-			tm("set", "-w", "-t", "x", "@cohort_working", v)
+			tm("set", "-w", "-t", "x:a", "@cohort_state", v)
 		}
-		got := tm("display", "-p", "-t", "x", "#{E:window-status-format}")
-		if strings.Contains(got, "●") != (v == "1") {
-			t.Errorf("@cohort_working=%q: label %q", v, got)
+		if got := tm("display", "-p", "-t", "x:a", "#{E:window-status-format}"); !strings.Contains(got+" ", want) {
+			t.Errorf("@cohort_state=%q: label %q, want %q in it", v, got, want)
 		}
 	}
 }

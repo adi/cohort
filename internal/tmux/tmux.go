@@ -31,13 +31,15 @@ type Window struct {
 	Dead    bool   // the active pane's command has exited (remain-on-exit)
 	// Activity is when the window last had output (unix seconds).
 	Activity int64
-	// Working is the value of WorkingOption: "1", "0" or "" (unset).
-	Working string
+	// State is the value of StateOption, "" if unset.
+	State string
 }
 
-// WorkingOption is the window option cohort sets to "1" while the
-// window's harness is working and "0" otherwise; tmux.conf shows it.
-const WorkingOption = "@cohort_working"
+// StateOption is the window option where cohort records what the
+// window's harness is doing: "working", "input" (waiting for the user
+// to answer a question or permission prompt) or "idle". tmux.conf
+// shows it in the window list.
+const StateOption = "@cohort_state"
 
 // Server is a handle to a tmux server identified by its socket name.
 // ConfigFile is the server's private tmux configuration, passed with
@@ -88,7 +90,7 @@ func (s *Server) HasSession(session string) bool {
 	return err == nil
 }
 
-const listFormat = "#{session_name}\t#{window_index}\t#{window_id}\t#{" + TagOption + "}\t#{@cohort_color}\t#{pane_dead}\t#{window_activity}\t#{" + WorkingOption + "}\t#{window_name}"
+const listFormat = "#{session_name}\t#{window_index}\t#{window_id}\t#{" + TagOption + "}\t#{@cohort_color}\t#{pane_dead}\t#{window_activity}\t#{" + StateOption + "}\t#{window_name}"
 
 // ListAll returns every winlink on the server. A server that is not
 // running has no windows.
@@ -111,7 +113,7 @@ func (s *Server) ListAll() ([]Window, error) {
 		if err != nil {
 			continue
 		}
-		w := Window{Session: parts[0], Index: idx, ID: parts[2], Tag: parts[3], Color: parts[4], Dead: parts[5] == "1", Working: parts[7], Name: parts[8]}
+		w := Window{Session: parts[0], Index: idx, ID: parts[2], Tag: parts[3], Color: parts[4], Dead: parts[5] == "1", State: parts[7], Name: parts[8]}
 		w.Activity, _ = strconv.ParseInt(parts[6], 10, 64)
 		wins = append(wins, w)
 	}

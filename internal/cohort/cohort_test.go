@@ -5,6 +5,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -499,46 +500,56 @@ func TestManagerBackoff(t *testing.T) {
 	}
 }
 
-func TestScreenWorking(t *testing.T) {
-	for screen, want := range map[string]bool{
-		"> \n─────\n  ⏵⏵ bypass permissions on · esc to interrupt\n\n\n":   true,
-		"• Working (12s • Esc to interrupt)\n› \n  gpt · ~/x\n":            true,
-		"> \n─────\n  ⏵⏵ bypass permissions on (shift+tab to cycle)\n":     false,
-		"esc to interrupt\n" + strings.Repeat("old output\n", 12) + "> \n": false,
-		"": false,
+func TestScreenState(t *testing.T) {
+	claudeIdle := "> \n─────\n  ⏵⏵ bypass permissions on (shift+tab to cycle)\n"
+	for screen, want := range map[string]string{
+		"> \n─────\n  ⏵⏵ bypass permissions on · esc to interrupt\n\n\n": stateWorking,
+		"• Working (12s • Esc to interrupt)\n› \n  gpt · ~/x\n":          stateWorking,
+		claudeIdle: stateIdle,
+		"esc to interrupt\n" + strings.Repeat("old output\n", 12) + "> \n": stateIdle,
+		"": stateIdle,
+		" Bash command\n   rm -rf build\n Do you want to proceed?\n ❯ 1. Yes\n   2. No\n\n Esc to cancel · Tab to amend\n":         stateInput,
+		" Which database?\n ❯ 1. Postgres\n   2. MySQL\n Enter to select · ↑/↓ to navigate · Esc to cancel\n":                      stateInput,
+		"  Would you like to run the following command?\n  $ make\n› 1. Yes, proceed\n  Press enter to confirm or esc to cancel\n": stateInput,
 	} {
-		if got := screenWorking(screen); got != want {
-			t.Errorf("screenWorking(%q) = %v, want %v", screen, got, want)
+		if got := screenState(screen); got != want {
+			t.Errorf("screenState(%q) = %q, want %q", screen, got, want)
 		}
 	}
 }
 
-// An agent is marked working while its screen shows "esc to
-// interrupt", and unmarked once it stops showing it.
-func TestAgentMarkedWorking(t *testing.T) {
+// An agent's state follows its screen: working while it shows "esc to
+// interrupt", input while it asks, idle after.
+func TestAgentState(t *testing.T) {
 	h := newHarness(t)
-	flag := filepath.Join(h.d.root, "flag")
-	h.config(`{"manager":"sleep 600","agents":[{"name":"a","command":"echo 'esc to interrupt'; while [ ! -e ` + flag + ` ]; do sleep 0.1; done; clear; echo idle; sleep 600"}]}`)
-	working := func() string {
-		return strings.TrimSpace(h.tmux("display-message", "-p", "-t", "Background:a", "#{@cohort_working}"))
+	step := filepath.Join(h.d.root, "step")
+	wait := func(n int) string {
+		return "until grep -qx " + strconv.Itoa(n) + " " + step + " 2>/dev/null; do sleep 0.1; done; clear; "
 	}
-	wait := func(want string) {
+	h.config(`{"manager":"sleep 600","agents":[{"name":"a","command":"echo 'esc to interrupt'; ` +
+		wait(1) + `echo 'Do you want to proceed?'; echo 'Esc to cancel'; ` + wait(2) + `echo done; sleep 600"}]}`)
+	state := func() string {
+		return strings.TrimSpace(h.tmux("display-message", "-p", "-t", "Background:a", "#{@cohort_state}"))
+	}
+	expect := func(want string) {
 		t.Helper()
 		for i := 0; i < 50; i++ {
 			h.tick()
-			if working() == want {
+			if state() == want {
 				return
 			}
 			time.Sleep(100 * time.Millisecond)
 		}
-		t.Fatalf("@cohort_working = %q, want %q", working(), want)
+		t.Fatalf("@cohort_state = %q, want %q", state(), want)
 	}
-	wait("1")
-	if err := os.WriteFile(flag, nil, 0o644); err != nil {
-		t.Fatal(err)
+	expect(stateWorking)
+	for n, want := range []string{stateInput, stateIdle} {
+		if err := os.WriteFile(step, []byte(strconv.Itoa(n+1)), 0o644); err != nil {
+			t.Fatal(err)
+		}
+		expect(want)
 	}
-	wait("0")
-	if got := strings.TrimSpace(h.tmux("display-message", "-p", "-t", "Desktop:0", "#{@cohort_working}")); got != "0" {
-		t.Errorf("manager @cohort_working = %q, want 0", got)
+	if got := strings.TrimSpace(h.tmux("display-message", "-p", "-t", "Desktop:0", "#{@cohort_state}")); got != stateIdle {
+		t.Errorf("manager @cohort_state = %q, want idle", got)
 	}
 }
