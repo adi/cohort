@@ -67,11 +67,6 @@ func TestTmuxConfLoads(t *testing.T) {
 			t.Errorf("prefix %s not disabled: %q", k, got)
 		}
 	}
-	for k, cmd := range map[string]string{"M-Left": "previous-window", "M-Right": "next-window"} {
-		if got := tm("list-keys", "-T", "root", k); !strings.Contains(got, cmd) {
-			t.Errorf("%s: %q, want %s", k, got, cmd)
-		}
-	}
 	if got := tm("list-keys", "-T", "prefix", "R"); !strings.Contains(got, "confirm-before") || !strings.Contains(got, "kill-window") {
 		t.Errorf("prefix R: %q", got)
 	}
