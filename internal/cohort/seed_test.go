@@ -76,7 +76,7 @@ func TestTmuxConfLoads(t *testing.T) {
 		}
 	}
 	for tt, want := range map[string]string{"Termius 8.0.1": "1", "iTerm2 3.5": "0", "": "0"} {
-		if got := tm("display", "-p", "#{m:Termius*,"+tt+"}"); got != want {
+		if got := strings.TrimSpace(tm("display", "-p", "#{m:Termius*,"+tt+"}")); got != want {
 			t.Errorf("Termius match on %q = %q, want %s", tt, got, want)
 		}
 	}
