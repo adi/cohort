@@ -67,6 +67,19 @@ func TestTmuxConfLoads(t *testing.T) {
 			t.Errorf("prefix %s not disabled: %q", k, got)
 		}
 	}
+	// Ctrl+arrows switch windows only from Termius; elsewhere they
+	// pass through to the pane.
+	for k, cmd := range map[string]string{"C-Left": "previous-window", "C-Right": "next-window"} {
+		got := tm("list-keys", "-T", "root", k)
+		if !strings.Contains(got, "Termius*") || !strings.Contains(got, cmd) || !strings.Contains(got, "send-keys "+k) {
+			t.Errorf("%s: %q", k, got)
+		}
+	}
+	for tt, want := range map[string]string{"Termius 8.0.1": "1", "iTerm2 3.5": "0", "": "0"} {
+		if got := tm("display", "-p", "#{m:Termius*,"+tt+"}"); got != want {
+			t.Errorf("Termius match on %q = %q, want %s", tt, got, want)
+		}
+	}
 	if got := tm("list-keys", "-T", "prefix", "R"); !strings.Contains(got, "confirm-before") || !strings.Contains(got, "kill-window") {
 		t.Errorf("prefix R: %q", got)
 	}
