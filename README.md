@@ -71,6 +71,8 @@ command itself.
   - **Current window** marked by reversed bar colours instead of `*`.
   - **Cmd+Left / Cmd+Right** for previous / next window (iTerm2 key
     mappings sending `\e[9001~` / `\e[9002~`).
+  - **Ctrl+Left / Ctrl+Right** for previous / next window in any
+    terminal (they no longer reach the pane as word jumps).
   - **iTerm2 tab** painted in the current window's colour and titled
     `agent@session`, through hooks running `tab-color.sh`. Only
     terminals that announce iTerm2 (`LC_TERMINAL`/`TERM_PROGRAM`, also
