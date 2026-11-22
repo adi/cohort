@@ -1,0 +1,18 @@
+# sha256 of every default tmux.conf and tab-color.sh cohort has shipped,
+# with the cohort folder written as @ROOT@. A file whose hash is listed
+# is an unmodified old default and is replaced on upgrade. Add the new
+# hash here whenever a default changes (TestKnownDefaults says so).
+169e2b1afd8a20cf2b879e80edc37177bb5d2510753b72dc043dc96658d12202  tmux.conf
+26d07d0fa8e7a1d61f91c83fa4abc8a170e3ae24715fb801e28d138bd9eca2d2  tmux.conf
+285521a60a861b7c15bdc452cd23332307c31d03b8a9ba4761d6c214c6807bda  tmux.conf
+3487767d6a55ef043f2646368473e5c694058c63d5a6576da28e746cf35f2056  tmux.conf
+3c1f641b097894d649cc938107e8ed898cfa17582cd7ec43377d375bc81a8945  tmux.conf
+3f10e1ec4cac27c9424463da465601cbabe07f19c01f445375d9b91a316d30b9  tmux.conf
+450f2dffa26d6d73c017611d83d8f835b2bbbdb124c51cccb2496e28e8bdef79  tmux.conf
+4da25b0034daacc4964e48e89609c539f6531c10109b155bcff48a3abe4d8903  tmux.conf
+5552fdb0830971196a0e671d6f80ede2d92a5c1afe578e2d0417ef26b19632ba  tmux.conf
+5f50c7b54835e3d32f26dd3e276be67e88cc7c0a5fed15d0f9dca963fd818063  tmux.conf
+7b3b1a3e9d5fb7e03de1a66b434031bf5fc282fbee2f99a2811f91a72b77988d  tmux.conf
+9a827756153d7701d4a70654c414ee72e7d33506eb0bad69e743e04a66c7f4ca  tmux.conf
+e49f6ed112f9521b1aa6f5d79e9fc4ed005056b9d802cd0c6092e62f54746c7f  tmux.conf
+32b1657e11b88b0b97a3eb7536676a62b3a89ae6986c2835e1e1b4bf730021f2  tab-color.sh

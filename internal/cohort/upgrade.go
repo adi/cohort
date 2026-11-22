@@ -10,6 +10,7 @@ import (
 	"io"
 	"net/http"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"runtime"
 	"strings"
@@ -61,10 +62,23 @@ func Upgrade(current string) error {
 	if err := refreshService(tag, sums); err != nil {
 		fmt.Printf("warning: service file not updated: %v\n", err)
 	}
+	// The new binary knows the new defaults for tmux.conf and
+	// tab-color.sh; this one doesn't.
+	if err := refreshFiles(exe); err != nil {
+		fmt.Printf("warning: tmux.conf not updated: %v\n", err)
+	}
 	fmt.Println("The running daemon keeps the old version until the service restarts")
 	fmt.Println("(agents keep running):")
 	fmt.Println("  " + restartHint)
 	return nil
+}
+
+// refreshFiles runs "<exe> refresh-files" (RefreshFiles in the newly
+// installed binary).
+var refreshFiles = func(exe string) error {
+	cmd := exec.Command(exe, "refresh-files")
+	cmd.Stdout, cmd.Stderr = os.Stdout, os.Stderr
+	return cmd.Run()
 }
 
 func latestTag() (string, error) {

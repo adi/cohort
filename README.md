@@ -61,8 +61,11 @@ command itself.
 - The private server uses its own tmux config, `~/.cohort/tmux.conf`,
   passed with `-f` on every invocation, so `~/.tmux.conf` is never
   read. tmux reads `-f` only at server start, and cohort starts the
-  server. cohort writes it (and `~/.cohort/tab-color.sh`) once, from
-  `internal/cohort/defaults/`; after that both belong to the manager.
+  server. cohort writes it (and `~/.cohort/tab-color.sh`) from
+  `internal/cohort/defaults/`. A new version's defaults replace a file
+  nobody has changed; a changed file is kept and the new default is
+  written next to it as `tmux.conf.new` / `tab-color.sh.new` to merge
+  by hand.
   The defaults, tuned for agentic work:
   - **Agent colours:** every window gets a colour derived from its
     agent name (window options `@cohort_color` / `@cohort_rgb`; same
@@ -174,7 +177,11 @@ cohort upgrade
 ```
 
 It replaces the binary (and, on Linux, the systemd unit when the
-release's differs, followed by `daemon-reload`). The running daemon
+release's differs, followed by `daemon-reload`), brings
+`~/.cohort/tmux.conf` and `tab-color.sh` up to the release's defaults
+when you haven't changed them (otherwise it writes `<file>.new` next to
+yours) and reloads tmux.conf into the running server. The daemon does
+the same when it starts. The running daemon
 keeps the old version until the service restarts:
 `systemctl --user restart cohort`, or
 `launchctl kickstart -k gui/$(id -u)/com.github.adi.cohort` on macOS.

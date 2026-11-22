@@ -35,7 +35,10 @@ server in line with one file. You drive it by editing that file.
 - **`~/.cohort/tmux.conf`** and **`~/.cohort/tab-color.sh`:** the
   server's tmux config (agent colours, key bindings, status bar) and
   the iTerm2 tab-colour hook script; yours to edit. Apply changes live
-  with `tmux -L cohort source-file ~/.cohort/tmux.conf`.
+  with `tmux -L cohort source-file ~/.cohort/tmux.conf`. Unchanged,
+  they follow cohort's new defaults on upgrade; once edited, cohort
+  keeps them and writes a new default next to them as `<file>.new`
+  for you to merge.
 
 To change agents, use the `cohort-agents` skill. To see what an
 agent is doing or send it a prompt, use the `cohort-talk` skill.

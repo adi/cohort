@@ -251,3 +251,83 @@ func TestStateMarker(t *testing.T) {
 		}
 	}
 }
+
+// Every default shipped must be listed in known.sha256, or installs
+// with it unmodified would be treated as changed by the next version.
+func TestKnownDefaults(t *testing.T) {
+	known, err := knownDefaults()
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, f := range serverFiles {
+		data, _ := serverDefaults.ReadFile("defaults/" + f.name)
+		if h := sha256hex(data); !known[f.name+" "+h] {
+			t.Errorf("defaults/%s changed: add this line to defaults/known.sha256:\n%s  %s", f.name, h, f.name)
+		}
+	}
+}
+
+func TestSyncServerFiles(t *testing.T) {
+	root := t.TempDir()
+	conf := filepath.Join(root, "tmux.conf")
+	actions := func() string {
+		t.Helper()
+		res, err := syncServerFiles(root)
+		if err != nil {
+			t.Fatal(err)
+		}
+		var a []string
+		for _, r := range res {
+			a = append(a, filepath.Base(r.Path)+"="+r.Action)
+		}
+		return strings.Join(a, " ")
+	}
+	if got := actions(); got != "tmux.conf=created tab-color.sh=created" {
+		t.Fatalf("first run: %s", got)
+	}
+	current, _ := os.ReadFile(conf)
+	if strings.Contains(string(current), "@ROOT@") || !strings.Contains(string(current), root+"/tab-color.sh") {
+		t.Fatal("@ROOT@ not replaced")
+	}
+	if got := actions(); got != "tmux.conf=current tab-color.sh=current" {
+		t.Fatalf("second run: %s", got)
+	}
+
+	// An unmodified default of an earlier version is replaced.
+	old := "# an older default\nsource @ROOT@/x\n"
+	orig := knownDefaults
+	knownDefaults = func() (map[string]bool, error) {
+		k, err := orig()
+		k["tmux.conf "+sha256hex([]byte(old))] = true
+		return k, err
+	}
+	t.Cleanup(func() { knownDefaults = orig })
+	os.WriteFile(conf, []byte(strings.ReplaceAll(old, "@ROOT@", root)), 0o644)
+	if got := actions(); got != "tmux.conf=updated tab-color.sh=current" {
+		t.Fatalf("old default: %s", got)
+	}
+	if data, _ := os.ReadFile(conf); string(data) != string(current) {
+		t.Fatal("old default not replaced by the current one")
+	}
+
+	// A file with the user's changes is kept; the default goes next to it.
+	os.WriteFile(conf, append(current, "set -g mouse off\n"...), 0o644)
+	if got := actions(); got != "tmux.conf=kept tab-color.sh=current" {
+		t.Fatalf("user changes: %s", got)
+	}
+	if data, _ := os.ReadFile(conf + ".new"); string(data) != string(current) {
+		t.Fatal("tmux.conf.new is not the default")
+	}
+	if data, _ := os.ReadFile(conf); !strings.HasSuffix(string(data), "set -g mouse off\n") {
+		t.Fatal("user's tmux.conf overwritten")
+	}
+	// Once the user takes the default, the .new file goes away.
+	os.Rename(conf+".new", conf)
+	os.WriteFile(conf+".new", current, 0o644)
+	if got := actions(); got != "tmux.conf=current tab-color.sh=current" {
+		t.Fatalf("after taking the default: %s", got)
+	}
+	if _, err := os.Stat(conf + ".new"); err == nil {
+		t.Fatal("tmux.conf.new left behind")
+	}
+}

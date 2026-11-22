@@ -120,6 +120,18 @@ func (s *Server) ListAll() ([]Window, error) {
 	return wins, nil
 }
 
+// HasServer reports whether the server is running.
+func (s *Server) HasServer() bool {
+	_, err := s.run("list-sessions")
+	return err == nil
+}
+
+// SourceFile reloads the server's config file.
+func (s *Server) SourceFile() error {
+	_, err := s.run("source-file", s.ConfigFile)
+	return err
+}
+
 // CapturePane returns the visible screen of the window's active pane.
 func (s *Server) CapturePane(id string) (string, error) {
 	return s.run("capture-pane", "-p", "-t", id)

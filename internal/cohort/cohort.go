@@ -132,16 +132,28 @@ func Run() error {
 	if err := syscall.Flock(int(lock.Fd()), syscall.LOCK_EX|syscall.LOCK_NB); err != nil {
 		return errors.New("another cohort daemon is already running")
 	}
-	if err := seedServerFiles(root); err != nil {
-		return err
-	}
 	logFile, err := os.OpenFile(filepath.Join(root, "cohort.log"),
 		os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0o644)
 	if err != nil {
 		return err
 	}
 	defer logFile.Close()
-	return newDaemon(root, SocketName, io.MultiWriter(os.Stderr, logFile)).loop()
+	d := newDaemon(root, SocketName, io.MultiWriter(os.Stderr, logFile))
+	// A new version may bring new defaults for tmux.conf and
+	// tab-color.sh; the windows of a running server pick them up here.
+	res, err := syncServerFiles(root)
+	if err != nil {
+		return err
+	}
+	for _, r := range res {
+		if r.Action != "current" {
+			d.log.Print(r)
+		}
+	}
+	if reloadIfChanged(d.tmux, res) {
+		d.log.Print("reloaded tmux.conf")
+	}
+	return d.loop()
 }
 
 // DefaultManagerCommand resumes the manager's last claude session or

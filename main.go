@@ -28,6 +28,10 @@ func main() {
 		err = cohort.Run()
 	case len(os.Args) == 2 && os.Args[1] == "upgrade":
 		err = cohort.Upgrade(version)
+	case len(os.Args) == 2 && os.Args[1] == "refresh-files":
+		// Run by "cohort upgrade" from the new binary: bring tmux.conf
+		// and tab-color.sh up to its defaults.
+		err = cohort.RefreshFiles()
 	case len(os.Args) == 2 && os.Args[1] == "version":
 		fmt.Println(version)
 	default:
