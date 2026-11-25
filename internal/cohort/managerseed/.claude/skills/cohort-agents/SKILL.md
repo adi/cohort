@@ -64,7 +64,11 @@ prompts) to both halves of a `||` command.
   pane (`cohort-talk` skill): many harnesses ask a one-time question in
   a new folder (e.g. "do you trust this folder?") that must be
   answered before they work. Ask the user if unsure what to answer.
-- **Show / hide in Desktop:** set `"linked"` to `true` / `false`.
+- **Show / hide in Desktop:** set `"linked"` to `true` / `false`, or
+  run `~/.cohort/cohort-manager/bin/agent show|hide <name>...`, which
+  does it in one write and reports status.json. `bin/agent list` shows
+  every agent with shown/hidden, state (working / input / idle), team
+  and purpose. The user has the same as `/agent ...`.
 - **Restart an agent:** `tmux -L cohort kill-window -t Background:<name>`.
   cohort starts it again with its command within a second. This is
   also how a `command` change takes effect.

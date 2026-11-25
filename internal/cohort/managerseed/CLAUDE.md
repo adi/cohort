@@ -75,9 +75,13 @@ about teams; they live only here.
 - **`bin/team list | show <team> | hide <team>`** flips `"linked"` on
   every member in `config.json` in one write and reports status.json
   issues. See the `cohort-team` skill.
-- **`/team ...`**: the same tool as a slash command for the user,
-  from the mod in `mods/cohort-team` (loaded by `--plugin-dir` in the
-  manager command). It runs without a model turn.
+- **`bin/agent list | show <agent>... | hide <agent>...`** does the
+  same for single agents; `list` also shows each agent's state
+  (working, input = waiting for the user, idle), team and purpose.
+- **`/team ...`** and **`/agent ...`**: the same tools as slash
+  commands for the user, from the mod in `mods/cohort-team` (loaded by
+  `--plugin-dir` in the manager command). They run without a model
+  turn.
 
 When another operation on a group comes up more than once (same
 instruction to all, restart all), write a skill for it in

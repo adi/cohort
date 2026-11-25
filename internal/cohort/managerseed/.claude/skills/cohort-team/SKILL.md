@@ -25,6 +25,7 @@ Only purpose and team go here; commands stay in `~/.cohort/config.json`.
 
 The user can run the same thing as `/team list|show <team>|hide <team>`
 (the `cohort-team` mod in `mods/`), which answers without a model turn.
+For single agents there is `bin/agent` / `/agent list|show|hide <agent>...`.
 
 The script edits `~/.cohort/config.json` in one write, waits, and prints
 status.json issues. Members not yet in config.json are skipped and named.

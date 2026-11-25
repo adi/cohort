@@ -2,6 +2,7 @@ package cohort
 
 import (
 	"encoding/json"
+	"fmt"
 	"io"
 	"io/fs"
 	"os"
@@ -329,5 +330,65 @@ func TestSyncServerFiles(t *testing.T) {
 	}
 	if _, err := os.Stat(conf + ".new"); err == nil {
 		t.Fatal("tmux.conf.new left behind")
+	}
+}
+
+func TestAgentTool(t *testing.T) {
+	if _, err := exec.LookPath("python3"); err != nil {
+		t.Skip("python3 not installed")
+	}
+	home, folder := seedTeamFolder(t)
+	cohortDir := filepath.Join(home, ".cohort")
+	if err := os.WriteFile(filepath.Join(cohortDir, "config.json"), []byte(`{"manager":"m","agents":[{"name":"a","command":"x"},{"name":"bb","command":"y","linked":true},{"name":"c","command":"z"}]}`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(folder, "teams.json"), []byte(`{"agents":{"a":{"purpose":"Backend API","team":"shop"}},"teams":{"shop":{"description":"d"}}}`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	agent := func(args ...string) (string, error) {
+		cmd := exec.Command(filepath.Join(folder, "bin/agent"), args...)
+		// No cohort tmux server here: state shows as "-".
+		cmd.Env = append(os.Environ(), "HOME="+home, "TEAM_SETTLE=0", "TMUX_TMPDIR="+t.TempDir())
+		out, err := cmd.CombinedOutput()
+		return string(out), err
+	}
+	out, err := agent("list")
+	rows := map[string]string{}
+	for _, line := range strings.Split(strings.TrimSpace(out), "\n") {
+		f := strings.Fields(line)
+		rows[f[0]] = strings.Join(f, " ")
+	}
+	if err != nil || rows["a"] != "a hidden - shop Backend API" || rows["bb"] != "bb shown - -" || rows["c"] != "c hidden - -" {
+		t.Fatalf("list: %q %v", out, err)
+	}
+	if out, err := agent("show", "a", "c"); err != nil || !strings.Contains(out, "shown: a, c") {
+		t.Fatalf("show: %q %v", out, err)
+	}
+	if out, err := agent("hide", "bb"); err != nil || !strings.Contains(out, "hidden: bb") {
+		t.Fatalf("hide: %q %v", out, err)
+	}
+	if out, err := agent("hide", "bb"); err != nil || !strings.Contains(out, "(no change)") {
+		t.Fatalf("hide again: %q %v", out, err)
+	}
+	if out, err := agent("show", "nope"); err == nil || !strings.Contains(out, "unknown agent(s): nope") {
+		t.Fatalf("unknown: %q %v", out, err)
+	}
+	cfg, _ := os.ReadFile(filepath.Join(cohortDir, "config.json"))
+	var c struct {
+		Manager string
+		Agents  []struct {
+			Name   string
+			Linked bool
+		}
+	}
+	if err := json.Unmarshal(cfg, &c); err != nil {
+		t.Fatal(err)
+	}
+	got := ""
+	for _, a := range c.Agents {
+		got += fmt.Sprintf("%s=%v ", a.Name, a.Linked)
+	}
+	if c.Manager != "m" || got != "a=true bb=false c=true " {
+		t.Fatalf("config: %s", cfg)
 	}
 }
